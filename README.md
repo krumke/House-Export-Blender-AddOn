@@ -11,7 +11,7 @@ Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for
 ## Installation
 
 1. *Edit → Preferences → Get Extensions → ⌄ (top right) → Install from Disk…* and pick
-   `house_pipeline_export-1.0.0.zip`.
+   `house_pipeline_export-1.2.1.zip`.
 2. In the add-on preferences set **Export folder** to the Unity folder `…/Assets/HousePipeline/`.
 3. Sidebar of the 3D viewport (N) → tab **House Export**.
 
@@ -96,11 +96,36 @@ node in front of the textures becomes `tiling` / `offset`. An **unconnected** im
 | `emissionColor` (linear), `emissionStrength`, `emissionMap` | Emission Color / Strength |
 | `surface` | `transparent` (render method Blended or Alpha < 1), `cutout` (alpha texture), else `opaque` |
 | `alpha`, `alphaMap`, `alphaCutoff` | Alpha |
-| `doubleSided` | custom property `doubleSided = True` on the material (default single-sided) |
+| `doubleSided` | *Material → Settings → Backface Culling* off = double-sided, on = single-sided (same as glTF) |
 | `tiling`, `offset` | Mapping node (scale, location) |
 
 Texture entries: `file` (relative to `MaterialSource/`), `hash`, `colorSpace` (`sRGB` for base color / emission,
 otherwise `Linear`), optional `channel`, `convention`.
+
+### Double-sided materials and glass
+
+`doubleSided` follows Blender's *Material → Settings → Backface Culling* (same rule as the glTF exporter):
+culling **off** = double-sided (Unity: Render Face *Both*), culling **on** = single-sided (*Front*).
+Turn culling on for everything that is a closed body; leave it off only where the back of a face must be
+visible (single-plane glass, foliage cards, …). Blender's viewport (Material Preview / EEVEE) then shows
+the same faces as Unity. In `HoF_Pipeline.blend` culling is on for every material except `glass` and
+`Glas_LOD1_opak`.
+
+**Known limitation:** URP Lit renders the back of a double-sided face **without flipping its normal**, so
+the back is lit as if it faced away (darker, wrong highlights and reflections). A single-plane pane therefore
+looks different from each side, and panes whose normals point in opposite directions look different from
+the same view point (check with *Viewport Overlays → Face Orientation*: blue = front, red = back).
+glTF importers like glTFast flip the normal on back faces, so a GLB import hides this. Options:
+
+1. **Solidify modifier on the glass objects (recommended):** a thickness of about 0.5–1 cm, modifier stays
+   live and is applied by the export. Turn backface culling **on** for the glass material. From each side
+   exactly one front face with a correct normal is visible: same look inside and outside, no sorting issues
+   within the pane. Raise `alpha` slightly if the glass gets too clear.
+2. **Consistent normals only:** point all panes outwards (*Mesh → Normals → Recalculate Outside* / *Flip*).
+   All panes then look the same and correct from outside, but uniformly wrong from inside. Smallest change.
+3. **Custom Unity shader:** a Shader Graph that flips the normal on back faces (*Is Front Face*). Works with
+   single planes, but is a special case outside the generated URP Lit materials (label the material
+   `HousePipelineManual` so the pipeline does not overwrite it).
 
 ## Panel
 
@@ -148,6 +173,7 @@ Errors abort the export, warnings do not.
 | W_GROUP_MISSING | layout sub-collection without `group`, treated as folder |
 | W_IGNORED | light/camera/empty in the layout, ignored |
 | W_UNITS | scene unit scale ≠ 1.0 |
+| W_NAME | layout node exported under another name because the name is taken by linked data |
 | W_MAT_NAME | generic material name or name with `.` / spaces (the name is the material's identity in Unity) |
 | W_MAT_UNSUPPORTED | node setup not transferable (other shader, ColorRamp, Bump, UV rotation, …); constant value used |
 | W_MAT_TEXTURE_MISSING | image file not found; map skipped |

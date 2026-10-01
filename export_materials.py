@@ -18,8 +18,8 @@ By default only local materials are exported; materials linked from another
 export materials linked from a shared material library; their ``sourceFile``
 is then the library file, so every kit writes identical entries for them.
 
-Double-sided rendering only for materials with the custom property
-``doubleSided = True``.
+Double-sided like the glTF exporter: backface culling off in Blender
+(Material > Settings) means double-sided, on means single-sided.
 
 Colors: ``baseColor`` is sRGB-encoded (what Unity's material color expects),
 ``emissionColor`` is linear (HDR). Texture colour space reflects the role:
@@ -113,9 +113,8 @@ def _mapping_of(tex_node, mat_name, report):
 def describe(mat, report):
     """Return (entry dict without textures resolved, list of (key, TextureRef, channel, tex_node))."""
     name = mat.name
-    # Blender's backface culling is off by default, so it says nothing about intent:
-    # double-sided only when the material carries the custom property doubleSided = True.
-    entry = dict(name=name, surface="opaque", doubleSided=bool(mat.get("doubleSided", False)))
+    # Same rule as the glTF exporter: no backface culling = double-sided.
+    entry = dict(name=name, surface="opaque", doubleSided=not mat.use_backface_culling)
     maps = []
 
     if GENERIC_NAME_RE.match(name) or not re.match(r"^[A-Za-z0-9_\-]+$", name):
