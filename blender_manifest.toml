@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+
+id = "house_pipeline_export"
+version = "1.2.0"
+name = "House Pipeline Export"
+tagline = "Export modular houses (modules and layout) for Unity"
+maintainer = "Campus Westend"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Writes FBX and JSON files to the configured export folder"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "/tests/", "/dist/", "*.zip", ".*"]
