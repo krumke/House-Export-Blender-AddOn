@@ -214,3 +214,13 @@ triggered by a deliberately broken scene; export aborts on errors without writin
 (maps, channels, normal strength, AO detection, tiling, emission, transparency, sRGB conversion, unchanged
 re-export, change detection, every material warning); linked library materials (kit flag on/off, house
 exports skip them).
+
+## Building the ZIP
+
+```
+blender --command extension build --source-dir . --output-dir ..
+```
+
+Uses `[build] paths_exclude_pattern` from `blender_manifest.toml` (tests, `.git`, caches are left out).
+Versions are tagged in git (`v1.2.0`, `v1.2.1`, …); bump `version` in `blender_manifest.toml` and
+`bl_info` in `__init__.py` together.
