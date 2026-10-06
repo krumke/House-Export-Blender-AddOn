@@ -1,5 +1,7 @@
 # House Pipeline Export (Blender → Unity)
 
+This add-on was created for the project: [Campus Westend in VR](https://github.com/texttechnologylab/Campus_Westend)
+
 Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for the Unity house pipeline:
 
 - **Modules**: one FBX per module (all LODs + optional collider), origin = the collection's `instance_offset`.
