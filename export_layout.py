@@ -6,6 +6,10 @@ collection instance becomes a plain empty with the instance's world matrix
 and the custom properties module / category / room / slot. Houses are
 exported in world coordinates: all grouping empties sit at the origin.
 
+An instance whose Blender parent is another layout instance (e.g. a handle
+parented to a door) is exported below that instance's empty with its matrix
+relative to the parent, so it moves with the parent in Unity.
+
 Axis conversion: Blender's FBX exporter converts nested empties wrongly when
 ``bake_space_transform`` is on (only direct children of the root are correct).
 The layout is therefore exported without it, and the empties are converted
@@ -25,6 +29,7 @@ import bpy
 from mathutils import Matrix
 
 from . import fbx_io, manifest
+from .validate import _iter_instances
 
 
 def export_layout(src_scene, house, layout, unique_modules, root_dir, report):
@@ -57,6 +62,8 @@ def export_layout(src_scene, house, layout, unique_modules, root_dir, report):
     G = fbx_io.axis_matrix()
     G_inv = G.inverted()
     counts, rooms = {}, []
+    instance_objs = {inst.obj for inst in _iter_instances(layout)}
+    instance_empties, nested = {}, []   # nested: (instance, parent object)
     try:
         with fbx_io.temp_scene(src_scene) as (tmp, view_layer):
             def build(node, parent):
@@ -72,23 +79,37 @@ def export_layout(src_scene, house, layout, unique_modules, root_dir, report):
                     storey = node.name.split("_")[1] if node.name.count("_") >= 2 else ""
                     rooms.append(dict(name=node.name, storey=storey))
                 for inst in node.instances:
-                    ie = make_empty(inst.obj.name, e, tmp)
-                    # Local matrix in FBX space (see module docstring). matrix_world is set as
-                    # well because the temporary scene is never evaluated into these objects.
-                    local = G @ inst.obj.matrix_world @ G_inv
-                    ie.matrix_basis = local
-                    ie.matrix_world = e.matrix_world @ local
-                    ie["module"] = inst.module
-                    ie["category"] = inst.category
-                    if inst.category == "interior":
-                        ie["room"] = inst.room
-                        ie["slot"] = inst.slot
-                    key = (inst.module, inst.source)
-                    counts[key] = counts.get(key, 0) + 1
+                    if inst.obj.parent in instance_objs:
+                        nested.append(inst)
+                        continue
+                    add_instance(inst, e, inst.obj.matrix_world)
                 for ch in node.children:
                     build(ch, e)
 
+            def add_instance(inst, parent_empty, matrix):
+                ie = make_empty(inst.obj.name, parent_empty, tmp)
+                # Local matrix in FBX space (see module docstring). matrix_world is set as
+                # well because the temporary scene is never evaluated into these objects.
+                local = G @ matrix @ G_inv
+                ie.matrix_basis = local
+                ie.matrix_world = parent_empty.matrix_world @ local
+                ie["module"] = inst.module
+                ie["category"] = inst.category
+                if inst.category == "interior":
+                    ie["room"] = inst.room
+                    ie["slot"] = inst.slot
+                key = (inst.module, inst.source)
+                counts[key] = counts.get(key, 0) + 1
+                instance_empties[inst.obj] = ie
+
             build(layout, None)
+            # Parents first: Blender parenting has no cycles, so every pass places at least one.
+            while nested:
+                ready = [i for i in nested if i.obj.parent in instance_empties]
+                for inst in ready:
+                    p = inst.obj.parent
+                    add_instance(inst, instance_empties[p], p.matrix_world.inverted() @ inst.obj.matrix_world)
+                nested = [i for i in nested if i not in ready]
             fbx_io.export_scene_contents(fbx_path, {"EMPTY"}, bake_space_transform=False)
             for e in reversed(created):
                 bpy.data.objects.remove(e, do_unlink=True)

@@ -49,7 +49,7 @@ def export_modules(src_scene, modules, out_dir, manifest_path, meta, force, repo
                 unchanged = prev is not None and prev.get("hash") == digest and os.path.isfile(path)
                 if unchanged and not force:
                     skipped.append(m.name)
-                    entries.append(dict(prev, category=m.category, detail=m.detail))
+                    entries.append(dict(prev, category=m.category, detail=m.detail, behavior=m.behavior))
                     continue
                 fbx_io.export_scene_contents(path, {"MESH"})
                 exported.append(m.name)
@@ -58,6 +58,7 @@ def export_modules(src_scene, modules, out_dir, manifest_path, meta, force, repo
                     file=filename,
                     category=m.category,
                     detail=m.detail,
+                    behavior=m.behavior,
                     lods=sorted(m.lods),
                     hasCollider=m.collider is not None,
                     hash=digest,

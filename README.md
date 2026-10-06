@@ -30,6 +30,9 @@ Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for
 - Modifiers stay live in the file and are applied **during export** only.
 - Collection properties: `category` (`exterior` / `interior`), `detail` (`structure` / `large` / `small`),
   `unique = True` for modules that only exist in this house.
+- Optional collection property `behavior = "door"`: the module becomes a door in Unity (not static,
+  opens/closes on XR select). The module origin (`instance_offset`) is the hinge, the door swings
+  around the vertical (Z) axis. Export the frame as its own static module.
 - Names: `A-Z a-z 0-9 _` only. Unique modules start with `<House>_`.
 
 ### Kit files
@@ -169,6 +172,8 @@ Errors abort the export, warnings do not.
 | W_NONUNIFORM | instances with non-uniform scale |
 | W_NO_DETAIL | interior module without `detail` (uses `large`) |
 | W_NO_CATEGORY | unique module without `category` (derived from usage) |
+| W_BEHAVIOR | unknown `behavior` value (module stays static) |
+| W_DOOR_NO_COL | door module without `<Module>_COL` (Unity adds a box collider from LOD0) |
 | W_APPENDED | local copy of a kit-looking module (append instead of link) |
 | W_GROUP_MISSING | layout sub-collection without `group`, treated as folder |
 | W_IGNORED | light/camera/empty in the layout, ignored |
@@ -187,6 +192,8 @@ Errors abort the export, warnings do not.
   `structure`, `props`, `folder`), not their names. `folder` empties are plain sub-folders of
   `Exterior` (or of `Structure`/`Props`).
 - **Instance properties**: `module`, `category`, and for interior instances `room` and `slot`.
+- **Nested instances**: an instance parented (Ctrl+P, Keep Transform) to another layout instance is exported
+  below it, relative to the parent. Use this for parts that move with a door, e.g. a handle module.
 - **Unique manifest** is named `<House>_Unique_Manifest.json` (same schema as `Kit_Manifest.json`,
   header has `source: "unique"` and `house`).
 - **Layout manifest** additionally contains `coordinateSpace: "world"`, `instanceCount`,

@@ -23,6 +23,8 @@ Warnings (export continues)
   W_NONUNIFORM      instances with non-uniform scale
   W_NO_DETAIL       interior module without 'detail' property (default 'large' is used)
   W_NO_CATEGORY     unique module without 'category' property (derived from usage)
+  W_BEHAVIOR        unknown 'behavior' property (module stays static)
+  W_DOOR_NO_COL     door module without <Module>_COL (Unity adds a box collider from LOD0)
   W_APPENDED        local copy of what looks like a kit module (append instead of link)
   W_GROUP_MISSING   layout sub-collection without 'group' property, treated as folder
   W_IGNORED         non-geometry object inside the layout is ignored
@@ -105,6 +107,12 @@ def validate_module(m, report, house=None):
 
     if m.category == "interior" and not getattr(m, "_detail_explicit", True):
         report.warn("W_NO_DETAIL", f"Interior module '{n}' has no 'detail' property, using '{m.detail}'")
+
+    raw = getattr(m, "_behavior_raw", None)
+    if raw not in (None, "") and raw not in C.BEHAVIORS:
+        report.warn("W_BEHAVIOR", f"Module '{n}': unknown behavior '{raw}' (allowed: {sorted(C.BEHAVIORS)}), module stays static")
+    if m.behavior == "door" and m.collider is None:
+        report.warn("W_DOOR_NO_COL", f"Door module '{n}' has no '{n}_COL'; Unity adds a box collider from LOD0")
 
 
 # --------------------------------------------------------------------------- kit

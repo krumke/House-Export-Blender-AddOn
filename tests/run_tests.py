@@ -261,6 +261,45 @@ def test_house_export():
           and any("TH_Shelf" in l for l in hp.operators.LAST_RESULT["lines"]))
 
 
+def test_door_export():
+    """behavior=door in the manifest; a handle parented to a door instance is nested in the layout."""
+    h = build_house("TD")
+    door = h["arrow"]
+    door["behavior"] = "door"
+    h["shelf"]["behavior"] = "window"   # unknown -> warning, stays static
+    d = bpy.data.objects["A_rot3axis"]
+    handle = bpy.data.objects["A_scaled"]
+    bpy.context.view_layer.update()
+    mw = handle.matrix_world.copy()
+    handle.parent = d
+    handle.matrix_parent_inverse = d.matrix_world.inverted()
+    bpy.context.view_layer.update()
+    check("door test: parenting keeps the handle in place", all(abs(a - b) < 1e-6 for ra, rb in zip(mw, handle.matrix_world) for a, b in zip(ra, rb)))
+    s = bpy.context.scene.house_pipeline
+    s.export_root_override = OUT
+    insts = {o: world_points(o) for o in h["root"].all_objects}
+    r = bpy.ops.house_pipeline.export_house()
+    lines = hp.operators.LAST_RESULT["lines"]
+    check("door export finishes", r == {"FINISHED"}, str(lines[:5]))
+    check("unknown behavior warns", any("W_BEHAVIOR" in l and "TD_Shelf" in l for l in lines), str(lines[:8]))
+    check("door without _COL warns", any("W_DOOR_NO_COL" in l and "TD_Arrow" in l for l in lines), str(lines[:8]))
+
+    lay_dir = os.path.join(OUT, "Houses", "TD", "Layout")
+    uni_dir = os.path.join(OUT, "Houses", "TD", "Unique")
+    worst, by_name = file_space_check("TD", lay_dir, uni_dir, insts)
+    check("nested handle matches Blender in FBX space", worst < 1e-4, f"max deviation {worst:.2e} m")
+    if isinstance(by_name, dict):
+        names = {uid: m["name"] for uid, m in fbx_reader.model_data(os.path.join(lay_dir, "TD_Layout.fbx"))[1].items()}
+        check("handle is a child of the door empty", names.get(by_name["A_scaled"]["parent"]) == "A_rot3axis",
+              names.get(by_name["A_scaled"]["parent"]))
+    man = hp.manifest.read_json(os.path.join(uni_dir, "TD_Unique_Manifest.json"))
+    e = {m["name"]: m for m in man["modules"]}
+    check("manifest behavior", e["TD_Arrow"]["behavior"] == "door" and e["TD_Shelf"]["behavior"] == "", str(e["TD_Arrow"]))
+    lm = hp.manifest.read_json(os.path.join(lay_dir, "TD_Layout_Manifest.json"))
+    check("nested instance counted once", lm["instanceCount"] == 8, str(lm["instanceCount"]))
+    s.export_root_override = ""
+
+
 def make_material_library():
     """Shared material library .blend with one textured material."""
     new_file()
@@ -575,7 +614,7 @@ def main():
     os.makedirs(OUT)
     hp.register()
     try:
-        for t in (test_house_export, test_validation, test_materials):
+        for t in (test_house_export, test_door_export, test_validation, test_materials):
             try:
                 t()
             except Exception:

@@ -31,6 +31,7 @@ LAYOUT_GROUPS = {GROUP_EXTERIOR, GROUP_INTERIOR, GROUP_ROOM, GROUP_STRUCTURE, GR
 CATEGORIES = {"exterior", "interior"}
 DETAILS = {"structure", "large", "small"}
 DEFAULT_DETAIL = {"exterior": "structure", "interior": "large"}
+BEHAVIORS = {"door"}
 
 MODE_KIT_EXTERIOR = "KIT_EXTERIOR"
 MODE_KIT_INTERIOR = "KIT_INTERIOR"
@@ -80,6 +81,7 @@ class ModuleInfo:
     source: str                      # SOURCE_UNIQUE / SOURCE_KIT
     category: str = "exterior"
     detail: str = "structure"
+    behavior: str = ""               # "" (static) or one of BEHAVIORS
     lods: dict = field(default_factory=dict)   # idx -> object
     collider: object = None
 
@@ -171,6 +173,8 @@ def gather_module(coll, source, category=None, report=None):
     det = coll.get("detail")
     m = ModuleInfo(name=coll.name, collection=coll, source=source, category=cat or "exterior")
     m.detail = det if det in DETAILS else DEFAULT_DETAIL[m.category]
+    beh = coll.get("behavior")
+    m.behavior = beh if beh in BEHAVIORS else ""
     for o in coll.objects:
         lm = LOD_RE.match(o.name)
         if lm and lm.group("module") == coll.name and o.type == "MESH":
@@ -179,6 +183,7 @@ def gather_module(coll, source, category=None, report=None):
             m.collider = o
     m._category_explicit = cat is not None
     m._detail_explicit = det in DETAILS
+    m._behavior_raw = beh
     return m
 
 
