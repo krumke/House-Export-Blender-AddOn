@@ -24,11 +24,13 @@ Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for
 ```
 <Module>                  collection, instance_offset = module origin
  ├─ <Module>_LOD0         mesh, required
- ├─ <Module>_LOD1 / _LOD2 optional, may be hidden (hide_viewport / hide_render); exported anyway
+ ├─ <Module>_LOD1 … _LOD7 optional, may be hidden (hide_viewport / hide_render); exported anyway
  └─ <Module>_COL          optional collider mesh
 ```
 
 - Mesh objects: rotation and scale applied, no parent, no negative scale.
+- Any number of LODs is exported, but keep the indices consecutive (`W_LOD_GAP`) and stay within
+  LOD0–LOD7, the maximum of a Unity LODGroup (`W_LOD_COUNT`).
 - Modifiers stay live in the file and are applied **during export** only.
 - Collection properties: `category` (`exterior` / `interior`), `detail` (`structure` / `large` / `small`),
   `unique = True` for modules that only exist in this house.
@@ -171,6 +173,8 @@ Errors abort the export, warnings do not.
 | E_MULTI_LINK | instance linked into several layout collections |
 | E_PATH | no export folder set |
 | W_LOD_BOUNDS | LOD bounds differ from LOD0 (> 5 cm / 5 %) |
+| W_LOD_GAP | LOD indices not consecutive (e.g. LOD0, LOD1, LOD3) |
+| W_LOD_COUNT | LOD index above LOD7 (Unity LODGroup supports at most 8 levels) |
 | W_NONUNIFORM | instances with non-uniform scale |
 | W_NO_DETAIL | interior module without `detail` (uses `large`) |
 | W_NO_CATEGORY | unique module without `category` (derived from usage) |

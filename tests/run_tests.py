@@ -455,6 +455,16 @@ def test_validation():
         o = h["arrow"].objects["TH_Arrow_LOD1"]
         o.location.x += 0.5
     expect("W_LOD_BOUNDS", lod_shift, warning=True)
+
+    def add_lod(idx):
+        def mutate(h):
+            name = f"TH_Arrow_LOD{idx}"
+            o = bpy.data.objects.new(name, arrow_mesh(name, 1.0))
+            o.location = h["arrow"].instance_offset
+            h["arrow"].objects.link(o)
+        return mutate
+    expect("W_LOD_GAP", add_lod(4), warning=True)
+    expect("W_LOD_COUNT", add_lod(8), warning=True)
     expect("W_NONUNIFORM", lambda h: setattr(bpy.data.objects["A_plain"], "scale", (1, 2, 1)), warning=True)
 
     def no_detail(h):

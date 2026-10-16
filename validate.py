@@ -20,6 +20,8 @@ Errors (export is aborted)
 
 Warnings (export continues)
   W_LOD_BOUNDS      LOD bounding boxes differ noticeably (origin shifted?)
+  W_LOD_GAP         LOD indices are not consecutive (e.g. LOD0, LOD1, LOD3)
+  W_LOD_COUNT       LOD index above LOD7 (Unity LODGroup supports at most 8 levels)
   W_NONUNIFORM      instances with non-uniform scale
   W_NO_DETAIL       interior module without 'detail' property (default 'large' is used)
   W_NO_CATEGORY     unique module without 'category' property (derived from usage)
@@ -104,6 +106,13 @@ def validate_module(m, report, house=None):
             d = max((mn - mn0).length, (mx - mx0).length)
             if d > max(0.05, 0.05 * size):
                 report.warn("W_LOD_BOUNDS", f"Module '{n}': bounds of LOD{idx} differ from LOD0 by {d:.3f} m (origin shifted?)")
+    if m.lods:
+        missing = sorted(set(range(max(m.lods))) - set(m.lods) - {0})
+        if missing:
+            report.warn("W_LOD_GAP", f"Module '{n}': LOD indices are not consecutive, missing {['LOD%d' % i for i in missing]}")
+        too_high = sorted(i for i in m.lods if i >= C.MAX_LODS)
+        if too_high:
+            report.warn("W_LOD_COUNT", f"Module '{n}': {['LOD%d' % i for i in too_high]} above LOD{C.MAX_LODS - 1}; Unity LODGroup supports at most {C.MAX_LODS} levels")
 
     if m.category == "interior" and not getattr(m, "_detail_explicit", True):
         report.warn("W_NO_DETAIL", f"Interior module '{n}' has no 'detail' property, using '{m.detail}'")
