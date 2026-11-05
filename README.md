@@ -15,7 +15,7 @@ Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for
 ## Installation
 
 1. *Edit → Preferences → Get Extensions → ⌄ (top right) → Install from Disk…* and pick
-   `house_pipeline_export-1.2.1.zip`.
+   `house_pipeline_export-2.0.0-alpha.zip`.
 2. In the add-on preferences set **Export folder** to the Unity folder `…/Assets/HousePipeline/` and, for the
    iPhone app, **House model folder** to any folder outside the Unity project.
 3. Sidebar of the 3D viewport (N) → tab **House Export**.
@@ -283,5 +283,5 @@ blender --command extension build --source-dir . --output-dir ..
 ```
 
 Uses `[build] paths_exclude_pattern` from `blender_manifest.toml` (tests, `.git`, caches are left out).
-Versions are tagged in git (`v1.2.0`, `v1.2.1`, …); bump `version` in `blender_manifest.toml` and
+Versions are tagged in git (`v1.2.0`, `v1.2.1`, …, `v2.0.0-alpha`); bump `version` in `blender_manifest.toml` and
 `bl_info` in `__init__.py` together.

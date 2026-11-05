@@ -9,7 +9,7 @@ See README.md.
 bl_info = {
     "name": "House Pipeline Export",
     "author": "Campus Westend",
-    "version": (1, 4, 0),
+    "version": (2, 0, 0),   # 2.0.0-alpha, see blender_manifest.toml
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > House Export",
     "description": "Export modular houses (modules + layout) for the Unity house pipeline",
