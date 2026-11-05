@@ -1,4 +1,4 @@
-"""Operators: Validate, Export Kit, Export House."""
+"""Operators: Validate, Export Kit, Export House, Export House Model."""
 
 import os
 import time
@@ -6,7 +6,7 @@ import time
 import bpy
 
 from . import common as C
-from . import export_layout, export_materials, export_modules, validate
+from . import export_house_model, export_layout, export_materials, export_modules, validate
 
 # Last result, shown in the panel. Kept in memory only so the .blend is not modified.
 LAST_RESULT = {"title": "", "lines": [], "errors": 0, "warnings": 0}
@@ -25,6 +25,17 @@ def export_root(context):
     prefs = addon_prefs(context)
     if prefs and prefs.export_root:
         return bpy.path.abspath(prefs.export_root)
+    return ""
+
+
+def model_root(context):
+    """Folder that receives the house model packages for the app (one <House>/ folder each)."""
+    settings = context.scene.house_pipeline
+    if settings.model_root_override:
+        return bpy.path.abspath(settings.model_root_override)
+    prefs = addon_prefs(context)
+    if prefs and prefs.model_root:
+        return bpy.path.abspath(prefs.model_root)
     return ""
 
 
@@ -160,4 +171,30 @@ class HOUSEPIPE_OT_export_house(bpy.types.Operator):
         return _finish(self, "Export House", report)
 
 
-classes = (HOUSEPIPE_OT_validate, HOUSEPIPE_OT_export_kit, HOUSEPIPE_OT_export_house)
+class HOUSEPIPE_OT_export_house_model(bpy.types.Operator):
+    bl_idname = "house_pipeline.export_house_model"
+    bl_label = "Export House Model"
+    bl_description = "Validate and write the house model for the iPhone app: model-house.json and one USDZ per storey"
+
+    @classmethod
+    def poll(cls, context):
+        return effective_mode(context) == C.MODE_HOUSE
+
+    def execute(self, context):
+        root = model_root(context)
+        house = effective_house(context)
+        report, _, layout = validate.validate_house(context.scene, house) if house else (C.Report(), [], None)
+        if not root:
+            report.error("E_PATH", "House model folder is not set")
+        if not house:
+            report.error("E_NO_ROOT", "No house name set and no house root collection found")
+        if report.errors:
+            return _finish(self, "Export House Model", report)
+        t = time.time()
+        pkg, n = export_house_model.export_house_model(context.scene, house, layout, root, report)
+        if pkg:
+            report.info(f"House model: {n} storey(s)  -> {pkg}  ({time.time() - t:.1f}s)")
+        return _finish(self, "Export House Model", report)
+
+
+classes = (HOUSEPIPE_OT_validate, HOUSEPIPE_OT_export_kit, HOUSEPIPE_OT_export_house, HOUSEPIPE_OT_export_house_model)

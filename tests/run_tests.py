@@ -12,6 +12,8 @@ import sys
 import shutil
 import traceback
 
+import json
+
 import bpy
 from mathutils import Matrix, Vector, Euler
 from math import radians
@@ -385,6 +387,159 @@ def test_room_split():
     check("seed in Exterior stays ignored", warnings(lambda g: empty(g["ext"], "ProbeSeed_X")))
     check("other empty in a room stays ignored", warnings(lambda g: empty(g["r1"], "Marker")))
 
+def box_module(name, parent_coll, size, lods=(0, 1)):
+    """Unique module with box LODs from (0, 0, 0) to ``size``; LOD<n> has n + 1 cuts per edge (different vertex counts)."""
+    coll = bpy.data.collections.new(name)
+    parent_coll.children.link(coll)
+    coll["unique"] = True
+    for i in lods:
+        sx, sy, sz = size
+        steps = i + 1
+        verts, faces = [], []
+        for z in (0, sz):
+            for k in range(steps + 1):
+                verts += [(sx * k / steps, 0, z), (sx * k / steps, sy, z)]
+        n = len(verts) // 2
+        faces = [[0, 1, 1 + n, n], [2 * steps, 2 * steps + 1, 2 * steps + 1 + n, 2 * steps + n]]
+        me = bpy.data.meshes.new(f"{name}_LOD{i}")
+        me.from_pydata(verts, [], faces)
+        me.update()
+        o = bpy.data.objects.new(f"{name}_LOD{i}", me)
+        coll.objects.link(o)
+        if i > 0:
+            o.hide_viewport = o.hide_render = True
+    return coll
+
+
+def test_house_model():
+    """house-model/1 package: model-house.json fields, polygons, storey order and the storey USDZ files."""
+    from pxr import Usd, UsdGeom
+    new_file()
+    sc = bpy.context.scene.collection
+    mods = child(sc, "_Modules_HM")
+    wall = box_module("HM_Wall", mods, (4.0, 0.2, 3.0), lods=(0, 1, 2))
+    wall_y = box_module("HM_WallY", mods, (0.2, 3.4, 3.0), lods=(0, 1))
+    chair = box_module("HM_Chair", mods, (0.5, 0.5, 1.5), lods=(0,))
+    for c in (wall, wall_y):
+        c["category"] = "exterior"
+    chair["category"] = "interior"
+    chair["detail"] = "small"
+    root = child(sc, "HM")
+    ext = child(root, "Exterior", "exterior")
+    ext_eg = child(ext, "Exterior_EG", "folder")
+    ext_dach = child(ext, "Exterior_Dach", "folder")
+    inte = child(root, "Interior", "interior")
+    eg = child(inte, "EG", "folder")
+
+    def room(name, folder):
+        r = child(folder, name, "room")
+        return r, child(r, "Structure_" + name[5:], "structure"), child(r, "Props_" + name[5:], "props")
+
+    def seed(coll, name, loc):
+        o = bpy.data.objects.new(name, None)
+        o.location = loc
+        coll.objects.link(o)
+
+    # Room A: closed box 0..4 x 0..3.4 (inner 3.6 x 3.0 = 10.8 m2), walls of Exterior_EG and of its Structure
+    ra, sa, pa = room("Room_EG_A", eg)
+    ra["room_nr"] = "0.01"
+    ra["room_name"] = "BÜRO"
+    ra["room_type"] = "Büroraum"
+    ra["room_area"] = 11.0
+    instance(wall, sa, "A_south", (0, 0, 0.5))
+    instance(wall, ext_eg, "A_north", (0, 3.2, 0))
+    instance(wall_y, sa, "A_west", (0, 0, 0))
+    instance(wall_y, ext_eg, "A_east", (3.8, 0, 0))
+    instance(chair, pa, "A_chair1", (1, 1, 0))
+    instance(chair, pa, "A_chair2", (2, 1, 0))
+    seed(ra, "ProbeSeed_A", (2, 1.7, 1.2))
+    # Room B: room_id, seed outside any closed region -> pin only
+    rb, sb, _ = room("Room_EG_B", eg)
+    rb["room_id"] = "R-B"
+    rb["room_area"] = "n/a"
+    instance(wall, sb, "B_wall", (10, 0, 0.2))
+    seed(rb, "ProbeSeed_B", (12, 5, 0))
+    # Room C (upper storey, directly in Interior): no seed
+    rc, scc, _ = room("Room_OG1_C", inte)
+    instance(wall, scc, "C_wall", (0, 0, 3.5))
+    instance(wall, ext_dach, "Roof", (0, 0, 7.0))
+    instance(wall, ext, "Loose", (0, -5, 0))
+    bpy.context.view_layer.update()
+
+    s = bpy.context.scene.house_pipeline
+    out = os.path.join(OUT, "Model")
+    s.model_root_override = out
+    pkg = os.path.join(out, "HM")
+    os.makedirs(os.path.join(pkg, "storeys"))
+    open(os.path.join(pkg, "storeys", "OLD.usdz"), "w").close()
+    before = snapshot()
+    r = bpy.ops.house_pipeline.export_house_model()
+    lines = hp.operators.LAST_RESULT["lines"]
+    check("house model export finishes", r == {"FINISHED"}, str(lines[:6]))
+    s.model_root_override = ""
+    after = snapshot()
+    s.model_root_override = out
+    diff = [k for k in set(before) | set(after) if before.get(k) != after.get(k)]
+    check("house file unchanged after house model export", not diff, str(diff[:5]))
+    check("exterior instance outside Exterior_<Storey> is reported", any("W_HM_EXTERIOR" in l for l in lines), str(lines))
+    check("room without marker is reported", any("W_HM_NO_MARKER" in l and "Room_OG1_C" in l for l in lines), str(lines))
+    check("non-numeric room_area is reported", any("W_HM_PROPERTY" in l for l in lines), str(lines))
+
+    with open(os.path.join(pkg, "model-house.json"), encoding="utf-8") as f:
+        data = json.load(f)
+    check("format and house", data["format"] == "house-model/1" and data["house"] == "HM", str(data)[:200])
+    check("storeys sorted bottom to top with floorY (Structure first, else exterior)",
+          data["storeys"] == [dict(id="EG", floorY=0.0, file="storeys/EG.usdz"), dict(id="OG1", floorY=3.5, file="storeys/OG1.usdz"),
+                              dict(id="Dach", floorY=7.0, file="storeys/Dach.usdz")], str(data["storeys"]))
+    check("storey files exist, stale storey file removed",
+          sorted(os.listdir(os.path.join(pkg, "storeys"))) == ["Dach.usdz", "EG.usdz", "OG1.usdz"], str(os.listdir(os.path.join(pkg, "storeys"))))
+    rooms = {e["collection"]: e for e in data["rooms"]}
+    a, b, c = rooms["Room_EG_A"], rooms["Room_EG_B"], rooms["Room_OG1_C"]
+    check("room order follows storeys", [e["id"] for e in data["rooms"]] == ["0.01", "R-B", "Room_OG1_C"], str([e["id"] for e in data["rooms"]]))
+    check("id: room_id, else room_nr, else collection name", (a["id"], b["id"], c["id"]) == ("0.01", "R-B", "Room_OG1_C"))
+    check("room metadata", (a["storey"], a["nr"], a["name"], a["type"], a["area"]) == ("EG", "0.01", "BÜRO", "Büroraum", 11.0), str(a))
+    check("unset metadata is null", (c["nr"], c["name"], c["type"], c["area"], b["area"]) == (None,) * 5, str(c))
+    check("propCount counts Props instances", (a["propCount"], b["propCount"], c["propCount"]) == (2, 0, 0))
+    check("seeds in model floor plane [x, -y]", a["seeds"] == [[2.0, -1.7]] and b["seeds"] == [[12.0, -5.0]] and c["seeds"] == [],
+          str((a["seeds"], b["seeds"])))
+    check("pin-only and unmarked rooms have no polygons", b["polygons"] == [] and c["polygons"] == [])
+    ok = len(a["polygons"]) == 1
+    if ok:
+        xs = sorted({p[0] for p in a["polygons"][0]})
+        zs = sorted({p[1] for p in a["polygons"][0]})
+        ok = (len(a["polygons"][0]) == 4 and abs(xs[0] - 0.2) <= 0.06 and abs(xs[-1] - 3.8) <= 0.06
+              and abs(zs[0] + 3.2) <= 0.06 and abs(zs[-1] + 0.2) <= 0.06)
+    check("enclosed room gets its inner outline in model coordinates (exterior walls count)", ok, str(a["polygons"]))
+
+    stage = Usd.Stage.Open(os.path.join(pkg, "storeys", "EG.usdz"))
+    check("storey model is Y up in meters", UsdGeom.GetStageUpAxis(stage) == "Y" and UsdGeom.GetStageMetersPerUnit(stage) == 1.0)
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+    rng = cache.ComputeWorldBound(stage.GetPseudoRoot()).ComputeAlignedRange()
+    lo, hi = rng.GetMin(), rng.GetMax()
+    # Blender box: x 0..14 (B_wall), y 0..3.4, z 0..3.5 -> model (x, z, -y)
+    want_lo, want_hi = (0, 0, -3.4), (14, 3.5, 0)
+    dev = max(max(abs(lo[i] - want_lo[i]), abs(hi[i] - want_hi[i])) for i in range(3))
+    check("storey model in the shared frame: model = (x, z, -y)", dev < 1e-4, f"{lo} {hi}")
+    prims = list(stage.Traverse(Usd.TraverseInstanceProxies()))
+    meshes = [p for p in prims if p.IsA(UsdGeom.Mesh)]
+    names = " ".join(str(p.GetPath()) for p in prims)
+    check("storey model leaves out Props and other storeys", "chair" not in names.lower() and "C_wall" not in names and "Loose" not in names, names)
+    counts = {len(UsdGeom.Mesh(m).GetPointsAttr().Get()) for m in meshes}
+    check("storey model uses each module's coarsest LOD", counts == {16, 12}, str(counts))   # HM_Wall LOD2, HM_WallY LOD1
+    check("storey model instances one prototype per module", len(meshes) == 5 and len(stage.GetPrototypes()) == 2,
+          f"{len(meshes)} meshes, {len(stage.GetPrototypes())} prototypes")
+    s.model_root_override = ""
+
+    rb["room_id"] = "0.01"
+    s.model_root_override = out
+    try:
+        r = bpy.ops.house_pipeline.export_house_model()
+    except RuntimeError:
+        r = {"CANCELLED"}
+    check("duplicate room id aborts the house model export", r == {"CANCELLED"} and
+          any("E_HM_ROOM_ID" in l for l in hp.operators.LAST_RESULT["lines"]), str(hp.operators.LAST_RESULT["lines"][:3]))
+    s.model_root_override = ""
+
 
 def make_material_library():
     """Shared material library .blend with one textured material."""
@@ -710,7 +865,7 @@ def main():
     os.makedirs(OUT)
     hp.register()
     try:
-        for t in (test_house_export, test_door_export, test_room_split, test_validation, test_materials):
+        for t in (test_house_export, test_door_export, test_room_split, test_house_model, test_validation, test_materials):
             try:
                 t()
             except Exception:

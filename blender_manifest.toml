@@ -12,7 +12,7 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
-files = "Writes FBX and JSON files to the configured export folder"
+files = "Writes FBX, JSON and USDZ files to the configured export folders"
 
 [build]
 paths_exclude_pattern = ["__pycache__/", "/tests/", "/dist/", "*.zip", ".*"]

@@ -15,8 +15,15 @@ class HousePipelinePreferences(bpy.types.AddonPreferences):
         subtype="DIR_PATH",
     )
 
+    model_root: bpy.props.StringProperty(
+        name="House model folder",
+        description="Folder for the iPhone app's house models; each house is written to <folder>/<House>/",
+        subtype="DIR_PATH",
+    )
+
     def draw(self, context):
         self.layout.prop(self, "export_root")
+        self.layout.prop(self, "model_root")
 
 
 class HousePipelineSettings(bpy.types.PropertyGroup):
@@ -37,6 +44,11 @@ class HousePipelineSettings(bpy.types.PropertyGroup):
     export_root_override: bpy.props.StringProperty(
         name="Folder override",
         description="Optional per-file export folder; empty uses the add-on preferences",
+        subtype="DIR_PATH",
+    )
+    model_root_override: bpy.props.StringProperty(
+        name="House model folder override",
+        description="Optional per-file folder for the house model; empty uses the add-on preferences",
         subtype="DIR_PATH",
     )
     export_materials: bpy.props.BoolProperty(
@@ -96,6 +108,19 @@ class HOUSEPIPE_PT_panel(bpy.types.Panel):
             row.operator("house_pipeline.export_house", icon="EXPORT")
         else:
             row.operator("house_pipeline.export_kit", icon="EXPORT")
+
+        if mode == C.MODE_HOUSE:
+            box = layout.box()
+            col = box.column(align=True)
+            col.label(text="House model (iPhone app)")
+            if prefs:
+                col.prop(prefs, "model_root", text="Folder")
+            col.prop(s, "model_root_override", text="Override")
+            mroot = ops.model_root(context)
+            col.label(text=mroot or "No house model folder set", icon="FILE_FOLDER" if mroot else "ERROR")
+            row = box.row()
+            row.scale_y = 1.3
+            row.operator("house_pipeline.export_house_model", icon="EXPORT")
 
         res = ops.LAST_RESULT
         if res["title"]:

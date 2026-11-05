@@ -9,12 +9,15 @@ Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for
 - **Manifests**: JSON files with hashes, LODs and categories (lists, readable with Unity's `JsonUtility`).
 - **Materials**: render-pipeline-neutral description of all materials + copies of the original textures.
   Unity builds the actual materials (URP/HDRP/Built-in) from it.
+- **House model** for the iPhone app: `model-house.json` (storeys, rooms, floor polygons) + one USDZ per
+  storey, format `house-model/1` (see [house-model-format.md](house-model-format.md)).
 
 ## Installation
 
 1. *Edit → Preferences → Get Extensions → ⌄ (top right) → Install from Disk…* and pick
    `house_pipeline_export-1.2.1.zip`.
-2. In the add-on preferences set **Export folder** to the Unity folder `…/Assets/HousePipeline/`.
+2. In the add-on preferences set **Export folder** to the Unity folder `…/Assets/HousePipeline/` and, for the
+   iPhone app, **House model folder** to any folder outside the Unity project.
 3. Sidebar of the 3D viewport (N) → tab **House Export**.
 
 ## File structure
@@ -77,6 +80,32 @@ _Modules_<House>      (excluded; unique modules, one collection each)
 Houses/<House>/Unique/<Module>.fbx + <House>_Unique_Manifest.json
 Houses/<House>/Layout/<House>_Layout.fbx + <House>_Layout_Manifest.json
 ```
+
+## House model (iPhone app)
+
+**Export House Model** (house files only, separate from **Export House**) validates the house and writes the
+package `house-model/1`, specified in [house-model-format.md](house-model-format.md):
+
+```
+<House model folder>/<House>/model-house.json
+<House model folder>/<House>/storeys/<Storey>.usdz
+```
+
+- **Storeys**: the storeys of all rooms (`Room_<Storey>_<Name>`) plus every `Exterior_<Storey>` collection
+  directly below `Exterior`. Exterior instances outside such a collection are left out (`W_HM_EXTERIOR`).
+  `floorY` is the lowest instance origin of the storey's Structure collections, else of its exterior.
+- **Rooms**: `id` = `room_id`, else `room_nr`, else the collection name (must be unique, `E_HM_ROOM_ID`);
+  `nr` / `name` / `type` / `area` from `room_nr` / `room_name` / `room_type` / `room_area`; `propCount` counts
+  the instances in the room's Props; `seeds` are the room's `ProbeSeed*` empties.
+- **Polygons**: computed per storey from the LOD0 bounding boxes of Structure and exterior instances, cut 1 m
+  above `floorY` (`house_model_polygons.py`, a copy of the app repo's reference code; keep both in sync).
+  A room only gets polygons if they are trustworthy (see the format); otherwise the app shows a pin at its
+  first seed. Rooms with neither are reported (`W_HM_NO_MARKER`).
+- **Storey models**: Structure of the storey's rooms + its exterior, one LOD per module, no Props, no colliders.
+  Each module is written once and instanced. Materials are UsdPreviewSurface, textures downscaled to 512 px.
+  The LOD is set by `STOREY_LOD` in `export_house_model.py` (`-1` = coarsest LOD of each module, the default;
+  `0` = LOD0), the texture size by `TEXTURE_SIZE`.
+- Storey files of storeys that no longer exist are removed from `storeys/`.
 
 ## Materials
 
@@ -145,12 +174,14 @@ glTF importers like glTFast flip the normal on back faces, so a GLB import hides
 | Element | Meaning |
 |---|---|
 | Folder / Override | export root (`Assets/HousePipeline/`); the override is stored per .blend file |
+| House model: Folder / Override | folder for the iPhone app's house models (house mode only) |
 | Mode | Auto (from the file name: `Kit_Exterior`, `Kit_Interior`, otherwise House) or manual |
 | House | house name = root collection, detected automatically if empty |
 | Export Materials | write the material manifest and textures (default on) |
 | Include Linked Materials | kit mode only: also export materials linked from a material library (default on) |
 | Force Export | rewrite module FBX files even if their hash is unchanged |
 | Validate / Export | results (errors, warnings, counts) appear in the panel and in the system console |
+| Export House Model | writes the house model package for the iPhone app |
 
 Module FBX files are only rewritten when the geometry hash changes (positions, normals, UVs, topology,
 material slot names of all LODs after modifiers). This avoids unnecessary re-imports in Unity.
@@ -177,7 +208,9 @@ Errors abort the export, warnings do not.
 | E_LAYOUT | Exterior/Interior/Room/Structure/Props structure violated |
 | E_LOOSE_OBJECT | geometry in the layout that is not an instance |
 | E_MULTI_LINK | instance linked into several layout collections |
-| E_PATH | no export folder set |
+| E_PATH | no export folder / house model folder set |
+| E_HM_ROOM_ID | house model: two rooms share an `id` (set `room_id`) |
+| E_HM_EMPTY | house model: no rooms and no `Exterior_<Storey>` collections |
 | W_LOD_BOUNDS | LOD bounds differ from LOD0 (> 5 cm / 5 %) |
 | W_LOD_GAP | LOD indices not consecutive (e.g. LOD0, LOD1, LOD3) |
 | W_LOD_COUNT | LOD index above LOD7 (Unity LODGroup supports at most 8 levels) |
@@ -191,6 +224,10 @@ Errors abort the export, warnings do not.
 | W_IGNORED | light/camera/empty in the layout, ignored (except `ProbeSeed*` empties directly in a room) |
 | W_UNITS | scene unit scale ≠ 1.0 |
 | W_NAME | layout node exported under another name because the name is taken by linked data |
+| W_HM_EXTERIOR | house model: exterior instances outside an `Exterior_<Storey>` collection are left out |
+| W_HM_FLOOR | house model: storey without instances, `floorY` = 0 |
+| W_HM_PROPERTY | house model: `room_area` is not a number, treated as unset |
+| W_HM_NO_MARKER | house model: room with neither polygons nor seeds, only in the app's room list |
 | W_MAT_NAME | generic material name or name with `.` / spaces (the name is the material's identity in Unity) |
 | W_MAT_UNSUPPORTED | node setup not transferable (other shader, ColorRamp, Bump, UV rotation, …); constant value used |
 | W_MAT_TEXTURE_MISSING | image file not found; map skipped |
@@ -229,14 +266,15 @@ Errors abort the export, warnings do not.
 blender -b --factory-startup --python tests/run_tests.py -- <empty output folder>
 ```
 
-105 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
+129 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
 exactly in FBX space; shifted `instance_offset`; hidden LODs and modifiers; manifests; second export
 writes nothing; only changed modules are re-exported; force export; removed modules; the .blend file
 is unchanged after export; kit export, mode detection and linked kit modules; every validation rule
 triggered by a deliberately broken scene; storey folders, `room_` properties and seeds; export aborts on errors without writing files; material export
 (maps, channels, normal strength, AO detection, tiling, emission, transparency, sRGB conversion, unchanged
 re-export, change detection, every material warning); linked library materials (kit flag on/off, house
-exports skip them).
+exports skip them); house model (room fields, ids, storey order and `floorY`, polygons, seeds, storey USDZ in the
+shared frame with the coarsest LOD, instancing, Props left out, duplicate ids abort).
 
 ## Building the ZIP
 
