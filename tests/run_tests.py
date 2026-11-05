@@ -403,6 +403,7 @@ def box_module(name, parent_coll, size, lods=(0, 1)):
         faces = [[0, 1, 1 + n, n], [2 * steps, 2 * steps + 1, 2 * steps + 1 + n, 2 * steps + n]]
         me = bpy.data.meshes.new(f"{name}_LOD{i}")
         me.from_pydata(verts, [], faces)
+        me.uv_layers.new(name="UVMap")
         me.update()
         o = bpy.data.objects.new(f"{name}_LOD{i}", me)
         coll.objects.link(o)
@@ -413,7 +414,7 @@ def box_module(name, parent_coll, size, lods=(0, 1)):
 
 def test_house_model():
     """house-model/1 package: model-house.json fields, polygons, storey order and the storey USDZ files."""
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, UsdShade, UsdUtils
     new_file()
     sc = bpy.context.scene.collection
     mods = child(sc, "_Modules_HM")
@@ -464,6 +465,11 @@ def test_house_model():
     instance(wall, scc, "C_wall", (0, 0, 3.5))
     instance(wall, ext_dach, "Roof", (0, 0, 7.0))
     instance(wall, ext, "Loose", (0, -5, 0))
+    tex_dir = os.path.join(OUT, "_hm_textures")
+    os.makedirs(tex_dir, exist_ok=True)
+    brick = make_material("HM_Brick", tex_dir)
+    for o in wall.objects:
+        o.data.materials.append(brick)
     bpy.context.view_layer.update()
 
     s = bpy.context.scene.house_pipeline
@@ -526,6 +532,15 @@ def test_house_model():
     check("storey model leaves out Props and other storeys", "chair" not in names.lower() and "C_wall" not in names and "Loose" not in names, names)
     counts = {len(UsdGeom.Mesh(m).GetPointsAttr().Get()) for m in meshes}
     check("storey model uses each module's coarsest LOD", counts == {16, 12}, str(counts))   # HM_Wall LOD2, HM_WallY LOD1
+    checker = UsdUtils.ComplianceChecker(arkit=True)
+    checker.CheckCompliance(os.path.join(pkg, "storeys", "EG.usdz"))
+    problems = checker.GetErrors() + checker.GetFailedChecks()
+    check("storey model passes usdchecker (ARKit)", not problems, str(problems[:3]))
+    nm = [UsdShade.Shader(p) for p in prims if p.GetTypeName() == "Shader" and "normal" in
+          str(UsdShade.Shader(p).GetInput("file").Get() if UsdShade.Shader(p).GetInput("file") else "")]
+    enc = [(sh.GetInput("scale").Get(), sh.GetInput("bias").Get(), sh.GetInput("sourceColorSpace").Get()) for sh in nm]
+    check("normal map encoded with scale (2,2,2,1), bias (-1,-1,-1,0), raw", nm and all(
+        tuple(sc) == (2, 2, 2, 1) and tuple(b) == (-1, -1, -1, 0) and cs == "raw" for sc, b, cs in enc), str(enc))
     check("storey model instances one prototype per module", len(meshes) == 5 and len(stage.GetPrototypes()) == 2,
           f"{len(meshes)} meshes, {len(stage.GetPrototypes())} prototypes")
     s.model_root_override = ""

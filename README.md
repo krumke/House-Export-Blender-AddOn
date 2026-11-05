@@ -103,6 +103,9 @@ package `house-model/1`, specified in [house-model-format.md](house-model-format
   first seed. Rooms with neither are reported (`W_HM_NO_MARKER`).
 - **Storey models**: Structure of the storey's rooms + its exterior, one LOD per module, no Props, no colliders.
   Each module is written once and instanced. Materials are UsdPreviewSurface, textures downscaled to 512 px.
+  Normal maps get the encoding UsdPreviewSurface expects for 8-bit images (`scale` (2,2,2,1), `bias`
+  (-1,-1,-1,0), `sourceColorSpace` raw); Blender's USD exporter leaves it out or writes a wrong alpha
+  component, so the USDZ is repacked after the export.
   The LOD is set by `STOREY_LOD` in `export_house_model.py` (`-1` = coarsest LOD of each module, the default;
   `0` = LOD0), the texture size by `TEXTURE_SIZE`.
 - Storey files of storeys that no longer exist are removed from `storeys/`.
@@ -266,7 +269,7 @@ Errors abort the export, warnings do not.
 blender -b --factory-startup --python tests/run_tests.py -- <empty output folder>
 ```
 
-129 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
+131 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
 exactly in FBX space; shifted `instance_offset`; hidden LODs and modifiers; manifests; second export
 writes nothing; only changed modules are re-exported; force export; removed modules; the .blend file
 is unchanged after export; kit export, mode detection and linked kit modules; every validation rule
@@ -274,7 +277,8 @@ triggered by a deliberately broken scene; storey folders, `room_` properties and
 (maps, channels, normal strength, AO detection, tiling, emission, transparency, sRGB conversion, unchanged
 re-export, change detection, every material warning); linked library materials (kit flag on/off, house
 exports skip them); house model (room fields, ids, storey order and `floorY`, polygons, seeds, storey USDZ in the
-shared frame with the coarsest LOD, instancing, Props left out, duplicate ids abort).
+shared frame with the coarsest LOD, instancing, Props left out, normal map encoding, ARKit compliance
+(`UsdUtils.ComplianceChecker`), duplicate ids abort).
 
 ## Building the ZIP
 

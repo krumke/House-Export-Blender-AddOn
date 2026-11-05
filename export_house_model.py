@@ -16,6 +16,8 @@ USD exporter does this conversion itself (forward -Z, up Y).
 
 import os
 import re
+import tempfile
+import zipfile
 
 import bpy
 
@@ -169,6 +171,55 @@ def _usd_export(path):
         raise RuntimeError(f"USD export failed for {path}: {result}")
 
 
+def fix_normal_maps(path):
+    """Set the UsdPreviewSurface normal map encoding on every texture that feeds a ``normal`` input.
+
+    Blender writes 8-bit normal maps without scale / bias, or with a wrong alpha component
+    (2,2,2,2 / -1,-1,-1,-1), and sometimes without ``sourceColorSpace = raw``. The USDZ is unpacked,
+    its root layer edited and packed again. Returns the number of textures changed.
+    """
+    from pxr import Gf, Sdf, UsdUtils
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with zipfile.ZipFile(path) as z:
+            root_name = z.namelist()[0]   # a USDZ starts with its root layer
+            z.extractall(tmp)
+        layer = Sdf.Layer.FindOrOpen(os.path.join(tmp, root_name))
+        targets = set()
+
+        def visit(p):
+            if p.IsPropertyPath() and p.name == "inputs:normal":
+                spec = layer.GetAttributeAtPath(p)
+                if spec is not None:
+                    targets.update(c.GetPrimPath() for c in spec.connectionPathList.GetAddedOrExplicitItems())
+        layer.Traverse(Sdf.Path.absoluteRootPath, visit)
+
+        wanted = (("inputs:scale", Sdf.ValueTypeNames.Float4, Gf.Vec4f(2, 2, 2, 1)),
+                  ("inputs:bias", Sdf.ValueTypeNames.Float4, Gf.Vec4f(-1, -1, -1, 0)),
+                  ("inputs:sourceColorSpace", Sdf.ValueTypeNames.Token, "raw"))
+        changed = 0
+        for prim_path in sorted(targets):
+            prim = layer.GetPrimAtPath(prim_path)
+            ident = prim.attributes.get("info:id") if prim is not None else None
+            if ident is None or ident.default != "UsdUVTexture":
+                continue
+            dirty = False
+            for name, type_name, value in wanted:
+                attr = prim.attributes.get(name) or Sdf.AttributeSpec(prim, name, type_name)
+                if attr.default != value:
+                    attr.default = value
+                    dirty = True
+            changed += dirty
+        if not changed:
+            return 0
+        layer.Save()
+        packed = os.path.join(tmp, "__packed.usdz")
+        if not UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(layer.realPath), packed):
+            raise RuntimeError(f"Repacking {path} failed")
+        os.replace(packed, path)
+        return changed
+
+
 def export_storey_model(src_scene, path, colls, report):
     """Write the instances of ``colls`` as one USDZ. Every module becomes one prototype that is instanced."""
     created_objs, created_colls = [], []
@@ -176,7 +227,7 @@ def export_storey_model(src_scene, path, colls, report):
         with fbx_io.temp_scene(src_scene) as (tmp, view_layer):
             protos = {}
             count = 0
-            for inst in _instances(colls):
+            for inst in list(_instances(colls)):   # list first: creating objects below invalidates the iterator
                 module = inst.instance_collection
                 if module not in protos:
                     lod = _lod_object(module)
@@ -203,6 +254,9 @@ def export_storey_model(src_scene, path, colls, report):
                 tmp.collection.objects.link(e)
                 count += 1
             _usd_export(path)
+            fixed = fix_normal_maps(path)
+            if fixed:
+                report.info(f"{os.path.basename(path)}: normal map encoding set on {fixed} texture(s)")
             return count
     finally:
         for o in created_objs:
