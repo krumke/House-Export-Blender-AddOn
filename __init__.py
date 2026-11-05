@@ -8,7 +8,7 @@ pipeline contract. See README.md.
 bl_info = {
     "name": "House Pipeline Export",
     "author": "Campus Westend",
-    "version": (1, 2, 1),
+    "version": (1, 4, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > House Export",
     "description": "Export modular houses (modules + layout) for the Unity house pipeline",
