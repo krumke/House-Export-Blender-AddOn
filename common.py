@@ -21,6 +21,7 @@ ROOM_RE = re.compile(r"^Room_(?P<storey>[A-Za-z0-9]+)_(?P<name>[A-Za-z0-9_]+)$")
 COL_SUFFIX = "_COL"
 SEED_PREFIX = "ProbeSeed"
 ROOM_PROP_PREFIX = "room_"
+MAX_LODS = 8                     # Unity LODGroup supports LOD0..LOD7
 
 GROUP_EXTERIOR = "exterior"
 GROUP_INTERIOR = "interior"
