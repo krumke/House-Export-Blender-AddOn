@@ -27,7 +27,7 @@ Warnings (export continues)
   W_DOOR_NO_COL     door module without <Module>_COL (Unity adds a box collider from LOD0)
   W_APPENDED        local copy of what looks like a kit module (append instead of link)
   W_GROUP_MISSING   layout sub-collection without 'group' property, treated as folder
-  W_IGNORED         non-geometry object inside the layout is ignored
+  W_IGNORED         non-geometry object inside the layout is ignored (except ProbeSeed empties directly in a room)
   W_UNITS           scene unit scale is not 1.0
 """
 
@@ -46,6 +46,8 @@ class LayoutNode:
     group: str                       # root / exterior / interior / room / structure / props / folder
     children: list = field(default_factory=list)
     instances: list = field(default_factory=list)   # list[LayoutInstance]
+    seeds: list = field(default_factory=list)       # ProbeSeed empties directly in a room
+    collection: object = None
 
 
 @dataclass
@@ -218,21 +220,23 @@ def _parse_layout(root, uniques, report):
 
 
 def _walk(coll, group, ctx, uniques, report, seen_objs):
-    node = LayoutNode(coll.name, group)
+    node = LayoutNode(coll.name, group, collection=coll)
     if group == C.GROUP_INTERIOR:
         _check_objects(coll, None, "Interior (place instances in a room's Structure/Props)", uniques, report, seen_objs)
         for ch in coll.children:
             g = C.collection_group(ch)
-            if g != C.GROUP_ROOM:
-                report.error("E_LAYOUT", f"'{ch.name}' under Interior must be a room named Room_<Storey>_<Name>")
-                continue
-            node.children.append(_walk(ch, C.GROUP_ROOM, dict(ctx), uniques, report, seen_objs))
+            if g == C.GROUP_FOLDER:
+                node.children.append(_walk_storey_folder(ch, ctx, uniques, report, seen_objs))
+            elif g == C.GROUP_ROOM:
+                node.children.append(_walk(ch, C.GROUP_ROOM, dict(ctx), uniques, report, seen_objs))
+            else:
+                report.error("E_LAYOUT", f"'{ch.name}' under Interior must be a storey folder (group = folder) or a room named Room_<Storey>_<Name>")
         return node
 
     if group == C.GROUP_ROOM:
         if not C.ROOM_RE.match(coll.name):
             report.error("E_LAYOUT", f"Room '{coll.name}' must be named Room_<Storey>_<Name> (e.g. Room_EG_Kueche)")
-        _check_objects(coll, None, f"room '{coll.name}' (use its Structure/Props)", uniques, report, seen_objs)
+        _check_objects(coll, node, f"room '{coll.name}' (use its Structure/Props)", uniques, report, seen_objs)
         slots = set()
         for ch in coll.children:
             g = C.collection_group(ch)
@@ -261,11 +265,24 @@ def _walk(coll, group, ctx, uniques, report, seen_objs):
     return node
 
 
+def _walk_storey_folder(coll, ctx, uniques, report, seen_objs):
+    node = LayoutNode(coll.name, C.GROUP_FOLDER, collection=coll)
+    _check_objects(coll, None, f"storey folder '{coll.name}' (place instances in a room's Structure/Props)", uniques, report, seen_objs)
+    for ch in coll.children:
+        if C.collection_group(ch) != C.GROUP_ROOM:
+            report.error("E_LAYOUT", f"'{ch.name}' in storey folder '{coll.name}' must be a room named Room_<Storey>_<Name>")
+            continue
+        node.children.append(_walk(ch, C.GROUP_ROOM, dict(ctx), uniques, report, seen_objs))
+    return node
+
+
 def _check_objects(coll, node, forbidden_where, uniques, report, seen_objs, ctx=None):
     for o in coll.objects:
         is_inst = o.instance_type == "COLLECTION" and o.instance_collection is not None
         if not is_inst:
-            if o.type in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES", "POINTCLOUD", "VOLUME", "GPENCIL", "GREASEPENCIL"}:
+            if node is not None and node.group == C.GROUP_ROOM and o.type == "EMPTY" and o.name.startswith(C.SEED_PREFIX):
+                node.seeds.append(o)
+            elif o.type in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES", "POINTCLOUD", "VOLUME", "GPENCIL", "GREASEPENCIL"}:
                 report.error("E_LOOSE_OBJECT", f"'{o.name}' in '{coll.name}' is geometry, not a collection instance of a module")
             else:
                 report.warn("W_IGNORED", f"'{o.name}' ({o.type}) in '{coll.name}' is ignored by the layout export")

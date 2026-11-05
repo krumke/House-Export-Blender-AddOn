@@ -1,7 +1,7 @@
 """Layout export: one FBX per house that contains only empties.
 
-The layout hierarchy (house root, Exterior, folders, Interior, rooms,
-Structure, Props) is rebuilt with plain empties in a temporary scene. Every
+The layout hierarchy (house root, Exterior, folders, Interior, storey folders,
+rooms, Structure, Props) is rebuilt with plain empties in a temporary scene. Every
 collection instance becomes a plain empty with the instance's world matrix
 and the custom properties module / category / room / slot. Houses are
 exported in world coordinates: all grouping empties sit at the origin.
@@ -9,6 +9,10 @@ exported in world coordinates: all grouping empties sit at the origin.
 An instance whose Blender parent is another layout instance (e.g. a handle
 parented to a door) is exported below that instance's empty with its matrix
 relative to the parent, so it moves with the parent in Unity.
+
+Room collection properties starting with ``room_`` are copied to the room's
+empty and its manifest entry. ProbeSeed empties lying directly in a room become
+empties without custom properties below the room's empty; they are not instances.
 
 Axis conversion: Blender's FBX exporter converts nested empties wrongly when
 ``bake_space_transform`` is on (only direct children of the root are correct).
@@ -28,8 +32,16 @@ import os
 import bpy
 from mathutils import Matrix
 
-from . import fbx_io, manifest
+from . import common as C, fbx_io, manifest
 from .validate import _iter_instances
+
+
+def _plain_prop(value):
+    """Custom property value as plain Python data, so it can be written to JSON as well."""
+    for conv in ("to_dict", "to_list"):
+        if hasattr(value, conv):
+            return getattr(value, conv)()
+    return value
 
 
 def export_layout(src_scene, house, layout, unique_modules, root_dir, report):
@@ -77,7 +89,16 @@ def export_layout(src_scene, house, layout, unique_modules, root_dir, report):
                     e["group"] = node.group
                 if node.group == "room":
                     storey = node.name.split("_")[1] if node.name.count("_") >= 2 else ""
-                    rooms.append(dict(name=node.name, storey=storey))
+                    entry = dict(name=node.name, storey=storey)
+                    for key, value in node.collection.items():
+                        if key.startswith(C.ROOM_PROP_PREFIX):
+                            e[key] = entry[key] = _plain_prop(value)
+                    rooms.append(entry)
+                    for seed in node.seeds:
+                        se = make_empty(seed.name, e, tmp)
+                        local = G @ seed.matrix_world @ G_inv
+                        se.matrix_basis = local
+                        se.matrix_world = e.matrix_world @ local
                 for inst in node.instances:
                     if inst.obj.parent in instance_objs:
                         nested.append(inst)

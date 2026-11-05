@@ -300,6 +300,92 @@ def test_door_export():
     s.export_root_override = ""
 
 
+def test_room_split():
+    """Storey folders below Interior, room_ properties and ProbeSeed empties in the layout."""
+    def empty(coll, name, loc=(0, 0, 0), rot=(0, 0, 0)):
+        o = bpy.data.objects.new(name, None)
+        o.location = loc
+        o.rotation_euler = [radians(a) for a in rot]
+        coll.objects.link(o)
+        return o
+
+    h = build_house("TR")
+    folder = child(h["inte"], "OG1", "folder")
+    r2 = bpy.data.collections["Room_OG1_Buero"]
+    h["inte"].children.unlink(r2)
+    folder.children.link(r2)
+    r2["room_area"] = 12.5
+    r2["room_exposure"] = 2
+    r2["room_label"] = "Buero"
+    r2["room_tint"] = (0.25, 0.5, 1.0)
+    r2["other"] = "not exported"
+    empty(r2, "ProbeSeed_A", (1.5, -2, 3), (10, 20, 30))
+    empty(r2, "ProbeSeed_B", (-4, 5, 0.5))
+    bpy.context.view_layer.update()
+    seeds = {n: bpy.data.objects[n].matrix_world.copy() for n in ("ProbeSeed_A", "ProbeSeed_B")}
+    report, _, _ = validate.validate_house(bpy.context.scene, "TR")
+    check("storey folder and seeds validate cleanly", report.ok and not report.warnings, str(report.lines()[:5]))
+
+    s = bpy.context.scene.house_pipeline
+    s.export_root_override = OUT
+    insts = {o: world_points(o) for o in h["root"].all_objects if o.instance_collection}
+    r = bpy.ops.house_pipeline.export_house()
+    check("room split export finishes", r == {"FINISHED"}, str(hp.operators.LAST_RESULT["lines"][:5]))
+    lay_dir = os.path.join(OUT, "Houses", "TR", "Layout")
+    worst, _ = file_space_check("TR", lay_dir, os.path.join(OUT, "Houses", "TR", "Unique"), insts)
+    check("instances below a storey folder match Blender in FBX space", worst < 1e-4, f"max deviation {worst:.2e} m")
+
+    models = fbx_reader.model_data(os.path.join(lay_dir, "TR_Layout.fbx"))[1]
+    by_name = {m["name"]: m for m in models.values()}
+    parent = lambda n: models[by_name[n]["parent"]]["name"]
+    check("room is a child of the storey folder", parent("Room_OG1_Buero") == "OG1", parent("Room_OG1_Buero"))
+    check("storey folder is a child of Interior", parent("OG1") == "Interior", parent("OG1"))
+    check("seeds are direct children of the room", all(parent(n) == "Room_OG1_Buero" for n in seeds))
+    G = fbx_io.axis_matrix()
+    dev = max(abs(a - b) for n, mw in seeds.items()
+              for ra, rb in zip(G @ mw @ G.inverted(), by_name[n]["world"]) for a, b in zip(ra, rb))
+    check("seeds match Blender in FBX space", dev < 1e-4, f"max deviation {dev:.2e}")
+    props = by_name["Room_OG1_Buero"]["props"]
+    check("room_ properties on the room empty", props.get("room_label") == [b"Buero"] and props.get("room_exposure") == [2]
+          and props.get("room_area") == [12.5] and props.get("room_tint") == [0.25, 0.5, 1.0], str(props))
+    check("other room properties not on the room empty", "other" not in props, str(props))
+    check("seeds have no custom properties", not {"group", "module", "category", "room", "slot"} & set(by_name["ProbeSeed_A"]["props"]),
+          str(by_name["ProbeSeed_A"]["props"]))
+
+    lm = hp.manifest.read_json(os.path.join(lay_dir, "TR_Layout_Manifest.json"))
+    e = {x["name"]: x for x in lm["rooms"]}
+    check("room_ properties in the manifest", e["Room_OG1_Buero"] == dict(
+        name="Room_OG1_Buero", storey="OG1", room_area=12.5, room_exposure=2, room_label="Buero", room_tint=[0.25, 0.5, 1.0]),
+        str(e["Room_OG1_Buero"]))
+    check("rooms without room_ properties unchanged", e["Room_EG_Kueche"] == dict(name="Room_EG_Kueche", storey="EG"), str(e["Room_EG_Kueche"]))
+    check("seeds are not counted as instances", lm["instanceCount"] == 8 and sum(m["count"] for m in lm["modules"]) == 8, str(lm["instanceCount"]))
+    check("source seeds keep their names", all(n in bpy.data.objects for n in seeds))
+    s.export_root_override = ""
+
+    def errors(mutate):
+        g = build_house("TR")
+        mutate(g)
+        return [l for l in validate.validate_house(bpy.context.scene, "TR")[0].lines() if "E_LAYOUT" in l]
+
+    def warnings(mutate):
+        g = build_house("TR")
+        mutate(g)
+        return [l for l in validate.validate_house(bpy.context.scene, "TR")[0].lines() if "W_IGNORED" in l]
+
+    check("instance directly in a storey folder is E_LAYOUT",
+          errors(lambda g: instance(g["shelf"], child(g["inte"], "OG2", "folder"), "S_bad")))
+    check("folder inside a storey folder is E_LAYOUT",
+          errors(lambda g: child(child(g["inte"], "OG2", "folder"), "Sub", "folder")))
+    check("Structure directly in a storey folder is E_LAYOUT",
+          errors(lambda g: child(child(g["inte"], "OG2", "folder"), "Structure_X", "structure")))
+    check("collection without group under Interior stays E_LAYOUT", errors(lambda g: child(g["inte"], "OG2")))
+    check("seed in Interior stays ignored", warnings(lambda g: empty(g["inte"], "ProbeSeed_X")))
+    check("seed in a storey folder stays ignored", warnings(lambda g: empty(child(g["inte"], "OG2", "folder"), "ProbeSeed_X")))
+    check("seed in Structure stays ignored", warnings(lambda g: empty(g["s1"], "ProbeSeed_X")))
+    check("seed in Exterior stays ignored", warnings(lambda g: empty(g["ext"], "ProbeSeed_X")))
+    check("other empty in a room stays ignored", warnings(lambda g: empty(g["r1"], "Marker")))
+
+
 def make_material_library():
     """Shared material library .blend with one textured material."""
     new_file()
@@ -614,7 +700,7 @@ def main():
     os.makedirs(OUT)
     hp.register()
     try:
-        for t in (test_house_export, test_door_export, test_validation, test_materials):
+        for t in (test_house_export, test_door_export, test_room_split, test_validation, test_materials):
             try:
                 t()
             except Exception:

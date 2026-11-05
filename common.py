@@ -19,6 +19,8 @@ MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 LOD_RE = re.compile(r"^(?P<module>.+)_LOD(?P<idx>\d+)$")
 ROOM_RE = re.compile(r"^Room_(?P<storey>[A-Za-z0-9]+)_(?P<name>[A-Za-z0-9_]+)$")
 COL_SUFFIX = "_COL"
+SEED_PREFIX = "ProbeSeed"
+ROOM_PROP_PREFIX = "room_"
 
 GROUP_EXTERIOR = "exterior"
 GROUP_INTERIOR = "interior"

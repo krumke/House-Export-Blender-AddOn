@@ -49,9 +49,10 @@ _Modules_<House>      (excluded; unique modules, one collection each)
 <House>
  ├─ Exterior          group = exterior    instances, sub-folders (group = folder)
  └─ Interior          group = interior
-     └─ Room_<Storey>_<Name>      group = room
-         ├─ Structure_…           group = structure
-         └─ Props_…               group = props
+     └─ <Storey folder>           group = folder (optional, contains only rooms)
+         └─ Room_<Storey>_<Name>  group = room     room_* properties, ProbeSeed* empties
+             ├─ Structure_…       group = structure
+             └─ Props_…           group = props
 ```
 
 - Layout collections are identified by the **`group` property**, not by their name
@@ -60,6 +61,11 @@ _Modules_<House>      (excluded; unique modules, one collection each)
 - Only collection instances may live in the layout. Instances point either to a collection
   **linked** from a kit file or to a unique module.
 - The house is exported in **world coordinates** (house root at 0,0,0).
+- Rooms lie directly in `Interior` or in a storey folder. Instances directly in a storey folder
+  are an `E_LAYOUT` error.
+- Empties named `ProbeSeed*` directly in a room are exported as seeds. Elsewhere they are ignored
+  (`W_IGNORED`).
+- Room collection properties starting with `room_` are exported with the room.
 
 **Export House** writes:
 
@@ -176,7 +182,7 @@ Errors abort the export, warnings do not.
 | W_DOOR_NO_COL | door module without `<Module>_COL` (Unity adds a box collider from LOD0) |
 | W_APPENDED | local copy of a kit-looking module (append instead of link) |
 | W_GROUP_MISSING | layout sub-collection without `group`, treated as folder |
-| W_IGNORED | light/camera/empty in the layout, ignored |
+| W_IGNORED | light/camera/empty in the layout, ignored (except `ProbeSeed*` empties directly in a room) |
 | W_UNITS | scene unit scale ≠ 1.0 |
 | W_NAME | layout node exported under another name because the name is taken by linked data |
 | W_MAT_NAME | generic material name or name with `.` / spaces (the name is the material's identity in Unity) |
@@ -190,14 +196,18 @@ Errors abort the export, warnings do not.
 
 - **Grouping**: read the `group` property of the layout empties (`exterior`, `interior`, `room`,
   `structure`, `props`, `folder`), not their names. `folder` empties are plain sub-folders of
-  `Exterior` (or of `Structure`/`Props`).
+  `Exterior` (or of `Structure`/`Props`), or storey folders below `Interior` that contain rooms.
 - **Instance properties**: `module`, `category`, and for interior instances `room` and `slot`.
+- **Room properties**: collection properties starting with `room_` are custom properties of the room's
+  empty and fields of its `rooms[]` entry in the layout manifest (under the same name, including `room_`).
+- **Seeds**: every `ProbeSeed*` empty is a direct child of its room's empty, with its own transform and
+  without custom properties. Seeds are not counted in `instanceCount` or `modules[]`.
 - **Nested instances**: an instance parented (Ctrl+P, Keep Transform) to another layout instance is exported
   below it, relative to the parent. Use this for parts that move with a door, e.g. a handle module.
 - **Unique manifest** is named `<House>_Unique_Manifest.json` (same schema as `Kit_Manifest.json`,
   header has `source: "unique"` and `house`).
 - **Layout manifest** additionally contains `coordinateSpace: "world"`, `instanceCount`,
-  `modules[]` (`name`, `source` = `kit`/`unique`, `count`) and `rooms[]` (`name`, `storey`).
+  `modules[]` (`name`, `source` = `kit`/`unique`, `count`) and `rooms[]` (`name`, `storey`, `room_*`).
 - **Units**: FBX files declare `UnitScaleFactor = 100` (cm units) with values in metres
   (`FBX_SCALE_ALL`); Unity with *Convert Units* on gives scale 1.
 - **Axes**: both module and layout FBX are written in Y-up / -Z forward space. Modules use
@@ -213,11 +223,11 @@ Errors abort the export, warnings do not.
 blender -b --factory-startup --python tests/run_tests.py -- <empty output folder>
 ```
 
-74 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
+105 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
 exactly in FBX space; shifted `instance_offset`; hidden LODs and modifiers; manifests; second export
 writes nothing; only changed modules are re-exported; force export; removed modules; the .blend file
 is unchanged after export; kit export, mode detection and linked kit modules; every validation rule
-triggered by a deliberately broken scene; export aborts on errors without writing files; material export
+triggered by a deliberately broken scene; storey folders, `room_` properties and seeds; export aborts on errors without writing files; material export
 (maps, channels, normal strength, AO detection, tiling, emission, transparency, sRGB conversion, unchanged
 re-export, change detection, every material warning); linked library materials (kit flag on/off, house
 exports skip them).
