@@ -89,6 +89,7 @@ package `house-model/1`, specified in [house-model-format.md](house-model-format
 ```
 <House model folder>/<House>/model-house.json
 <House model folder>/<House>/storeys/<Storey>.usdz
+<House model folder>/<House>/props/<Room id>.usdz      (Export Props, rooms with Props only)
 ```
 
 - **Storeys**: the storeys of all rooms (`Room_<Storey>_<Name>`) plus every `Exterior_<Storey>` collection
@@ -106,9 +107,15 @@ package `house-model/1`, specified in [house-model-format.md](house-model-format
   Normal maps get the encoding UsdPreviewSurface expects for 8-bit images (`scale` (2,2,2,1), `bias`
   (-1,-1,-1,0), `sourceColorSpace` raw); Blender's USD exporter leaves it out or writes a wrong alpha
   component, so the USDZ is repacked after the export.
-  The LOD is set by `STOREY_LOD` in `export_house_model.py` (`-1` = coarsest LOD of each module, the default;
-  `0` = LOD0), the texture size by `TEXTURE_SIZE`.
-- Storey files of storeys that no longer exist are removed from `storeys/`.
+  The LOD is set in the panel (**Storey LOD**: Coarsest, the default, or LOD0..LOD7; a module without that LOD
+  uses its next coarser LOD below it), the texture size by `TEXTURE_SIZE` in `export_house_model.py`.
+- **Props models** (**Export Props**, on by default): the Props of each room with Props as a separate USDZ in
+  the same frame, written like the storey models with their own **Props LOD**, so the app can show a room's
+  furniture on demand. The room's `props` field holds the path, `null` otherwise. Characters in the room id
+  other than `A-Z a-z 0-9 . _ -` become `_` in the file name; ids that end up in the same file name abort the
+  export (`E_HM_PROPS_FILE`).
+- Storey and props files that no longer belong to the package are removed (all props files when Export Props
+  is off).
 
 ## Materials
 
@@ -184,6 +191,7 @@ glTF importers like glTFast flip the normal on back faces, so a GLB import hides
 | Include Linked Materials | kit mode only: also export materials linked from a material library (default on) |
 | Force Export | rewrite module FBX files even if their hash is unchanged |
 | Validate / Export | results (errors, warnings, counts) appear in the panel and in the system console |
+| Storey LOD / Export Props / Props LOD | house model: LOD of the storey models, write a props model per room, LOD of the props models |
 | Export House Model | writes the house model package for the iPhone app |
 
 Module FBX files are only rewritten when the geometry hash changes (positions, normals, UVs, topology,
@@ -213,6 +221,7 @@ Errors abort the export, warnings do not.
 | E_MULTI_LINK | instance linked into several layout collections |
 | E_PATH | no export folder / house model folder set |
 | E_HM_ROOM_ID | house model: two rooms share an `id` (set `room_id`) |
+| E_HM_PROPS_FILE | house model: two room ids map to the same props file name |
 | E_HM_EMPTY | house model: no rooms and no `Exterior_<Storey>` collections |
 | W_LOD_BOUNDS | LOD bounds differ from LOD0 (> 5 cm / 5 %) |
 | W_LOD_GAP | LOD indices not consecutive (e.g. LOD0, LOD1, LOD3) |
@@ -277,7 +286,8 @@ triggered by a deliberately broken scene; storey folders, `room_` properties and
 (maps, channels, normal strength, AO detection, tiling, emission, transparency, sRGB conversion, unchanged
 re-export, change detection, every material warning); linked library materials (kit flag on/off, house
 exports skip them); house model (room fields, ids, storey order and `floorY`, polygons, seeds, storey USDZ in the
-shared frame with the coarsest LOD, instancing, Props left out, normal map encoding, ARKit compliance
+shared frame with the coarsest LOD, instancing, Props left out, normal map encoding, props models per room
+(frame, LOD, stale files, switched off), Storey / Props LOD settings, ARKit compliance
 (`UsdUtils.ComplianceChecker`), duplicate ids abort).
 
 ## Building the ZIP

@@ -420,7 +420,7 @@ def test_house_model():
     mods = child(sc, "_Modules_HM")
     wall = box_module("HM_Wall", mods, (4.0, 0.2, 3.0), lods=(0, 1, 2))
     wall_y = box_module("HM_WallY", mods, (0.2, 3.4, 3.0), lods=(0, 1))
-    chair = box_module("HM_Chair", mods, (0.5, 0.5, 1.5), lods=(0,))
+    chair = box_module("HM_Chair", mods, (0.5, 0.5, 1.5), lods=(0, 1))
     for c in (wall, wall_y):
         c["category"] = "exterior"
     chair["category"] = "interior"
@@ -478,6 +478,8 @@ def test_house_model():
     pkg = os.path.join(out, "HM")
     os.makedirs(os.path.join(pkg, "storeys"))
     open(os.path.join(pkg, "storeys", "OLD.usdz"), "w").close()
+    os.makedirs(os.path.join(pkg, "props"))
+    open(os.path.join(pkg, "props", "OLD.usdz"), "w").close()
     before = snapshot()
     r = bpy.ops.house_pipeline.export_house_model()
     lines = hp.operators.LAST_RESULT["lines"]
@@ -506,6 +508,10 @@ def test_house_model():
     check("room metadata", (a["storey"], a["nr"], a["name"], a["type"], a["area"]) == ("EG", "0.01", "BÜRO", "Büroraum", 11.0), str(a))
     check("unset metadata is null", (c["nr"], c["name"], c["type"], c["area"], b["area"]) == (None,) * 5, str(c))
     check("propCount counts Props instances", (a["propCount"], b["propCount"], c["propCount"]) == (2, 0, 0))
+    check("props file only for rooms with Props", (a["props"], b["props"], c["props"]) == ("props/0.01.usdz", None, None),
+          str((a["props"], b["props"], c["props"])))
+    check("props files exist, stale props file removed",
+          os.listdir(os.path.join(pkg, "props")) == ["0.01.usdz"], str(os.listdir(os.path.join(pkg, "props"))))
     check("seeds in model floor plane [x, -y]", a["seeds"] == [[2.0, -1.7]] and b["seeds"] == [[12.0, -5.0]] and c["seeds"] == [],
           str((a["seeds"], b["seeds"])))
     check("pin-only and unmarked rooms have no polygons", b["polygons"] == [] and c["polygons"] == [])
@@ -543,6 +549,45 @@ def test_house_model():
         tuple(sc) == (2, 2, 2, 1) and tuple(b) == (-1, -1, -1, 0) and cs == "raw" for sc, b, cs in enc), str(enc))
     check("storey model instances one prototype per module", len(meshes) == 5 and len(stage.GetPrototypes()) == 2,
           f"{len(meshes)} meshes, {len(stage.GetPrototypes())} prototypes")
+
+    pstage = Usd.Stage.Open(os.path.join(pkg, "props", "0.01.usdz"))
+    rng = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"]).ComputeWorldBound(
+        pstage.GetPseudoRoot()).ComputeAlignedRange()
+    lo, hi = rng.GetMin(), rng.GetMax()
+    # chairs at (1, 1, 0) and (2, 1, 0), 0.5 x 0.5 x 1.5 -> model (1, 0, -1.5) .. (2.5, 1.5, -1)
+    want_lo, want_hi = (1, 0, -1.5), (2.5, 1.5, -1)
+    dev = max(max(abs(lo[i] - want_lo[i]), abs(hi[i] - want_hi[i])) for i in range(3))
+    check("props model in the shared frame", dev < 1e-4, f"{lo} {hi}")
+    pmeshes = [p for p in pstage.Traverse(Usd.TraverseInstanceProxies()) if p.IsA(UsdGeom.Mesh)]
+    pcounts = [len(UsdGeom.Mesh(m).GetPointsAttr().Get()) for m in pmeshes]
+    check("props model holds the room's Props at the coarsest LOD, instanced",
+          pcounts == [12, 12] and len(pstage.GetPrototypes()) == 1, f"{pcounts}, {len(pstage.GetPrototypes())} prototypes")
+    checker = UsdUtils.ComplianceChecker(arkit=True)
+    checker.CheckCompliance(os.path.join(pkg, "props", "0.01.usdz"))
+    problems = checker.GetErrors() + checker.GetFailedChecks()
+    check("props model passes usdchecker (ARKit)", not problems, str(problems[:3]))
+
+    def mesh_points(path):
+        st = Usd.Stage.Open(path)
+        st.Reload()   # the layer registry still holds the files opened above
+        return {len(UsdGeom.Mesh(p).GetPointsAttr().Get()) for p in st.Traverse(Usd.TraverseInstanceProxies()) if p.IsA(UsdGeom.Mesh)}
+
+    s.model_storey_lod = "1"
+    s.model_props_lod = "0"
+    r = bpy.ops.house_pipeline.export_house_model()
+    check("storey LOD setting: LOD1, falling back below if missing", r == {"FINISHED"} and
+          mesh_points(os.path.join(pkg, "storeys", "EG.usdz")) == {12}, str(mesh_points(os.path.join(pkg, "storeys", "EG.usdz"))))
+    check("props LOD setting: LOD0", mesh_points(os.path.join(pkg, "props", "0.01.usdz")) == {8},
+          str(mesh_points(os.path.join(pkg, "props", "0.01.usdz"))))
+    s.model_export_props = False
+    r = bpy.ops.house_pipeline.export_house_model()
+    with open(os.path.join(pkg, "model-house.json"), encoding="utf-8") as f:
+        data = json.load(f)
+    check("without Export Props: no props field values, props folder removed",
+          r == {"FINISHED"} and all(e["props"] is None for e in data["rooms"]) and not os.path.exists(os.path.join(pkg, "props")),
+          str([e["props"] for e in data["rooms"]]))
+    s.model_export_props = True
+    s.model_storey_lod = s.model_props_lod = "COARSEST"
     s.model_root_override = ""
 
     rb["room_id"] = "0.01"

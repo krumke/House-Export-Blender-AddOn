@@ -26,6 +26,10 @@ class HousePipelinePreferences(bpy.types.AddonPreferences):
         self.layout.prop(self, "model_root")
 
 
+LOD_ITEMS = [("COARSEST", "Coarsest", "Coarsest LOD of each module (highest index)")] + [
+    (str(i), f"LOD{i}", "") for i in range(C.MAX_LODS)]
+
+
 class HousePipelineSettings(bpy.types.PropertyGroup):
     mode: bpy.props.EnumProperty(
         name="Mode",
@@ -61,6 +65,24 @@ class HousePipelineSettings(bpy.types.PropertyGroup):
         description="Kit files only: also export materials linked from another .blend (e.g. a shared material "
                     "library). House exports never export linked materials",
         default=True,
+    )
+    model_storey_lod: bpy.props.EnumProperty(
+        name="Storey LOD",
+        description="LOD of each module in the storey models; a missing LOD falls back to the next coarser one below it",
+        items=LOD_ITEMS,
+        default="COARSEST",
+    )
+    model_export_props: bpy.props.BoolProperty(
+        name="Export Props",
+        description="Write the Props of every room as a separate model (props/<room id>.usdz) that the app "
+                    "shows on demand",
+        default=True,
+    )
+    model_props_lod: bpy.props.EnumProperty(
+        name="Props LOD",
+        description="LOD of each module in the props models; a missing LOD falls back to the next coarser one below it",
+        items=LOD_ITEMS,
+        default="COARSEST",
     )
     force_export: bpy.props.BoolProperty(
         name="Force Export",
@@ -118,6 +140,12 @@ class HOUSEPIPE_PT_panel(bpy.types.Panel):
             col.prop(s, "model_root_override", text="Override")
             mroot = ops.model_root(context)
             col.label(text=mroot or "No house model folder set", icon="FILE_FOLDER" if mroot else "ERROR")
+            col = box.column(align=True)
+            col.prop(s, "model_storey_lod")
+            col.prop(s, "model_export_props")
+            sub = col.row()
+            sub.enabled = s.model_export_props
+            sub.prop(s, "model_props_lod")
             row = box.row()
             row.scale_y = 1.3
             row.operator("house_pipeline.export_house_model", icon="EXPORT")

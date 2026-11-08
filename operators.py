@@ -52,6 +52,11 @@ def effective_house(context):
     return root.name if root else ""
 
 
+def lod_index(value):
+    """LOD setting ("COARSEST" / "0".."7") -> LOD index for the house model export."""
+    return export_house_model.COARSEST_LOD if value == "COARSEST" else int(value)
+
+
 def _publish(title, report, extra=()):
     lines = report.lines() + list(extra)
     LAST_RESULT.update(title=title, lines=lines, errors=len(report.errors), warnings=len(report.warnings))
@@ -174,7 +179,8 @@ class HOUSEPIPE_OT_export_house(bpy.types.Operator):
 class HOUSEPIPE_OT_export_house_model(bpy.types.Operator):
     bl_idname = "house_pipeline.export_house_model"
     bl_label = "Export House Model"
-    bl_description = "Validate and write the house model for the iPhone app: model-house.json and one USDZ per storey"
+    bl_description = ("Validate and write the house model for the iPhone app: model-house.json, one USDZ per storey "
+                      "and optionally one USDZ with the Props per room")
 
     @classmethod
     def poll(cls, context):
@@ -191,7 +197,11 @@ class HOUSEPIPE_OT_export_house_model(bpy.types.Operator):
         if report.errors:
             return _finish(self, "Export House Model", report)
         t = time.time()
-        pkg, n = export_house_model.export_house_model(context.scene, house, layout, root, report)
+        s = context.scene.house_pipeline
+        pkg, n = export_house_model.export_house_model(
+            context.scene, house, layout, root, report,
+            storey_lod=lod_index(s.model_storey_lod), export_props=s.model_export_props,
+            props_lod=lod_index(s.model_props_lod))
         if pkg:
             report.info(f"House model: {n} storey(s)  -> {pkg}  ({time.time() - t:.1f}s)")
         return _finish(self, "Export House Model", report)

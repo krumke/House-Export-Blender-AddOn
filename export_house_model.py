@@ -4,11 +4,13 @@ Writes a package folder per house:
 
     <House>/model-house.json    house, storeys and rooms
     <House>/storeys/<id>.usdz   one model per storey
+    <House>/props/<room>.usdz   optional: the Props of one room
 
 Storeys are the storeys of all rooms (``Room_<Storey>_<Name>``) plus the
 ``Exterior_<Storey>`` children of the exterior collection. A storey model holds
-the Structure instances of its rooms and the instances of its exterior, each as
-one LOD (``STOREY_LOD``) of its module; Props and colliders are left out.
+the Structure instances of its rooms and the instances of its exterior; Props
+and colliders are left out. Props go into a separate model per room, so the app
+can show them on demand. Every module is written as one LOD (see ``_lod_object``).
 
 Coordinates: a Blender point maps to ``model = (x, z, -y)`` (meters, Y up). The
 USD exporter does this conversion itself (forward -Z, up Y).
@@ -28,11 +30,10 @@ from .house_model_polygons import floor_polygons, model_xz
 FORMAT = "house-model/1"
 MODEL_FILE = "model-house.json"
 STOREY_DIR = "storeys"
+PROPS_DIR = "props"
 EXTERIOR_STOREY_RE = re.compile(r"^Exterior_(?P<storey>[A-Za-z0-9]+)$")
 
-# LOD index of each module in the storey models. -1 = coarsest LOD the module has (highest index),
-# 0 = LOD0. Any other index falls back to the module's coarsest LOD below it.
-STOREY_LOD = -1
+COARSEST_LOD = -1
 TEXTURE_SIZE = "512"     # usdz_downscale_size: KEEP, 256, 512, 1024, 2048, 4096
 
 
@@ -98,6 +99,7 @@ def _gather(layout, report):
         storey(sid)["structure"].extend(structure)
         rooms.append(dict(
             collection=coll,
+            props=props,
             seeds=[s.matrix_world.translation.copy() for s in node.seeds],
             entry=dict(
                 id=_text(coll, "room_id") or _text(coll, "room_nr") or coll.name,
@@ -108,6 +110,7 @@ def _gather(layout, report):
                 type=_text(coll, "room_type"),
                 area=_number(coll, "room_area", report),
                 propCount=sum(1 for _ in _instances(props)),
+                props=None,
             ),
         ))
 
@@ -134,8 +137,10 @@ def _floor_z(sid, s, report):
     return 0.0
 
 
-# --------------------------------------------------------------------------- storey models
-def _lod_object(coll):
+# --------------------------------------------------------------------------- models
+def _lod_object(coll, lod):
+    """The module's mesh for LOD index ``lod``: COARSEST_LOD = highest index the module has, otherwise
+    that index or, if missing, the module's coarsest LOD below it."""
     lods = {}
     for o in coll.objects:
         lm = C.LOD_RE.match(o.name)
@@ -143,9 +148,9 @@ def _lod_object(coll):
             lods[int(lm.group("idx"))] = o
     if not lods:
         return None
-    if STOREY_LOD < 0:
+    if lod < 0:
         return lods[max(lods)]
-    return lods[max((i for i in lods if i <= STOREY_LOD), default=min(lods))]
+    return lods[max((i for i in lods if i <= lod), default=min(lods))]
 
 
 def _usd_export(path):
@@ -220,7 +225,7 @@ def fix_normal_maps(path):
         return changed
 
 
-def export_storey_model(src_scene, path, colls, report):
+def export_model(src_scene, path, colls, lod, report):
     """Write the instances of ``colls`` as one USDZ. Every module becomes one prototype that is instanced."""
     created_objs, created_colls = [], []
     try:
@@ -230,16 +235,16 @@ def export_storey_model(src_scene, path, colls, report):
             for inst in list(_instances(colls)):   # list first: creating objects below invalidates the iterator
                 module = inst.instance_collection
                 if module not in protos:
-                    lod = _lod_object(module)
+                    src = _lod_object(module, lod)
                     proto = None
-                    if lod is not None:
+                    if src is not None:
                         proto = bpy.data.collections.new(f"__hm_{module.name}")
                         created_colls.append(proto)
                         proto.instance_offset = module.instance_offset
-                        copy = lod.copy()
+                        copy = src.copy()
                         created_objs.append(copy)
                         copy.parent = None
-                        copy.matrix_world = lod.matrix_world.copy()
+                        copy.matrix_world = src.matrix_world.copy()
                         copy.hide_viewport = copy.hide_render = False
                         proto.objects.link(copy)
                     protos[module] = proto
@@ -269,8 +274,27 @@ def export_storey_model(src_scene, path, colls, report):
 
 
 # --------------------------------------------------------------------------- export
-def export_house_model(src_scene, house, layout, root_dir, report):
-    """Write the house-model/1 package. Returns (package folder, number of storeys) or (None, 0) on errors."""
+def _props_stem(rid):
+    """File name (without extension) of a room's props model."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", rid).lstrip(".") or "_"
+
+
+def _remove_stale(folder, keep, what, report):
+    if not os.path.isdir(folder):
+        return
+    for f in sorted(os.listdir(folder)):
+        if f.endswith(".usdz") and f not in keep:
+            os.remove(os.path.join(folder, f))
+            report.info(f"Removed {what}: {os.path.basename(folder)}/{f}")
+
+
+def export_house_model(src_scene, house, layout, root_dir, report,
+                       storey_lod=COARSEST_LOD, export_props=True, props_lod=COARSEST_LOD):
+    """Write the house-model/1 package. Returns (package folder, number of storeys) or (None, 0) on errors.
+
+    ``storey_lod`` / ``props_lod``: LOD index of the modules in the storey / props models, COARSEST_LOD for
+    the coarsest LOD of each module. Without ``export_props`` no props models are written and old ones removed.
+    """
     storeys, rooms = _gather(layout, report)
 
     ids = {}
@@ -279,6 +303,15 @@ def export_house_model(src_scene, house, layout, root_dir, report):
     for rid, colls in sorted(ids.items()):
         if len(colls) > 1:
             report.error("E_HM_ROOM_ID", f"Room id '{rid}' is used by {sorted(colls)}; ids must be unique (set room_id)")
+    if export_props:
+        stems = {}
+        for r in rooms:
+            if r["entry"]["propCount"]:
+                stems.setdefault(_props_stem(r["entry"]["id"]).lower(), []).append(r["entry"]["id"])
+        for same in stems.values():
+            if len(same) > 1:
+                report.error("E_HM_PROPS_FILE", f"Room ids {sorted(same)} map to the same props file name; "
+                                                "make them differ in more than case or special characters")
     if not storeys:
         report.error("E_HM_EMPTY", "No rooms and no Exterior_<Storey> collections, nothing to export")
     if report.errors:
@@ -303,15 +336,28 @@ def export_house_model(src_scene, house, layout, root_dir, report):
     for sid in order:
         rel = f"{STOREY_DIR}/{sid}.usdz"
         s = storeys[sid]
-        n = export_storey_model(src_scene, os.path.join(pkg, rel), s["structure"] + s["exterior"], report)
+        n = export_model(src_scene, os.path.join(pkg, rel), s["structure"] + s["exterior"], storey_lod, report)
         report.info(f"Storey {sid}: floorY {floor[sid]:.3f}, {n} instance(s) -> {rel}")
         entries.append(dict(id=sid, floorY=round(floor[sid], 3) + 0.0, file=rel))
+    _remove_stale(storey_dir, {f"{sid}.usdz" for sid in order}, "storey model of a storey that no longer exists", report)
 
-    keep = {f"{sid}.usdz" for sid in order}
-    for f in sorted(os.listdir(storey_dir)):
-        if f.endswith(".usdz") and f not in keep:
-            os.remove(os.path.join(storey_dir, f))
-            report.info(f"Removed storey model of a storey that no longer exists: {STOREY_DIR}/{f}")
+    props_dir = os.path.join(pkg, PROPS_DIR)
+    keep = set()
+    if export_props:
+        for r in rooms:
+            e = r["entry"]
+            if not e["propCount"]:
+                continue
+            os.makedirs(props_dir, exist_ok=True)
+            rel = f"{PROPS_DIR}/{_props_stem(e['id'])}.usdz"
+            n = export_model(src_scene, os.path.join(pkg, rel), r["props"], props_lod, report)
+            if n:
+                e["props"] = rel
+                keep.add(os.path.basename(rel))
+                report.info(f"Room {e['id']}: {n} prop(s) -> {rel}")
+    _remove_stale(props_dir, keep, "props model", report)
+    if os.path.isdir(props_dir) and not os.listdir(props_dir):
+        os.rmdir(props_dir)
 
     rank = {sid: i for i, sid in enumerate(order)}
     room_entries = [r["entry"] for r in sorted(rooms, key=lambda r: (rank[r["entry"]["storey"]], r["entry"]["id"]))]

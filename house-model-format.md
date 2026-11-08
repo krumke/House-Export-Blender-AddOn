@@ -10,10 +10,11 @@ this format and never reads a `.blend`. `tools/house_model_polygons.py` is refer
 <House>/
   model-house.json      house, storeys and rooms
   storeys/<id>.usdz     one model per storey
+  props/<room>.usdz     optional: the Props of one room
 ```
 
-Everything must be inside the package folder, and `file` paths are relative to it. An importer rejects
-absolute paths, `..`, and a package with a missing storey file.
+Everything must be inside the package folder, and `file` and `props` paths are relative to it. An importer
+rejects absolute paths, `..`, and a package with a missing storey or props file.
 
 ## Coordinates
 
@@ -40,7 +41,8 @@ of their storey's `floorY`.
       "name": "BÜRO (Allg.)",
       "type": "Büroraum",
       "area": 8.75,
-      "propCount": 0,
+      "propCount": 2,
+      "props": "props/02-2110-G01-105.usdz",
       "seeds": [[-13.45, -51.7]],
       "polygons": [[[-10.4, -52.8], [-14.5, -52.8], [-14.5, -50.6], [-10.4, -50.6]]]
     }
@@ -57,6 +59,7 @@ of their storey's `floorY`.
 | `storey` | yes | A `storeys[].id` |
 | `nr`, `name`, `type`, `area` | no | `room_nr`, `room_name`, `room_type`, `room_area` (m²), `null` if unset |
 | `propCount` | yes | Instances in the room's `Props` collection. Above 0 means the room has interior |
+| `props` | no | Path of the room's props model, `null` or missing if none was exported |
 | `seeds` | yes | Points inside the room, possibly empty |
 | `polygons` | yes | Floor outlines without holes, possibly empty. Winding is unspecified |
 
@@ -73,6 +76,7 @@ Rooms are the collections with `group = room` anywhere below the `group = interi
 | `storeys` | Storeys of all rooms, plus `Exterior_<Storey>` children of the `group = exterior` collection |
 | `floorY` | Lowest instance origin of the storey's `Structure` collections, else of its exterior |
 | `propCount` | Collection instances below the room's `group = props` child |
+| `props` | `props/<id>.usdz`; characters other than `A-Z a-z 0-9 . _ -` in `id` become `_` |
 | `seeds` | Objects directly in the room whose name starts with `ProbeSeed` |
 
 Adding a `room_id` to a room that was exported without one changes its `id`. The app therefore matches
@@ -99,6 +103,12 @@ in the room list.
 
 ## Storey models
 
-Each `.usdz` holds the storey's `Structure` and `Exterior_<id>` instances in the shared frame, at the lowest
-level of detail each module has. Leave out `Props` and colliders. Storey models must stay light, because a
-phone shows them together.
+Each `.usdz` holds the storey's `Structure` and `Exterior_<id>` instances in the shared frame, by default at
+the lowest level of detail each module has. Leave out `Props` and colliders. Storey models must stay light,
+because a phone shows them together.
+
+## Props models
+
+A props model holds the instances of one room's `Props` collection, in the same shared frame as the storey
+models, so the app can add it to its storey without a transform and show a room's furniture on demand. Only
+rooms with props get one. Like storey models, props models leave out colliders.
