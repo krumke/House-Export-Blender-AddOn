@@ -18,6 +18,9 @@ By default only local materials are exported; materials linked from another
 export materials linked from a shared material library; their ``sourceFile``
 is then the library file, so every kit writes identical entries for them.
 
+Custom property ``emissionGI`` on the material: "baked" (default, field left out) or
+"none" (emission does not contribute to baked GI in Unity); written as ``emissionGI``.
+
 Double-sided like the glTF exporter: backface culling off in Blender
 (Material > Settings) means double-sided, on means single-sided.
 
@@ -38,6 +41,7 @@ from . import manifest
 AO_RE = re.compile(r"(^|[^a-z])(ao|ambientocclusion|ambient_occlusion|occlusion)([^a-z]|$)", re.IGNORECASE)
 GENERIC_NAME_RE = re.compile(r"^(Material|Mat)(\.\d+)?$")
 DATA_SOCKETS = {"Metallic": "metallicMap", "Roughness": "roughnessMap"}
+EMISSION_GI = {"baked", "none"}
 EPS = 1e-6
 
 
@@ -110,12 +114,22 @@ def _mapping_of(tex_node, mat_name, report):
     return (1.0, 1.0), (0.0, 0.0)
 
 
+def emission_gi(mat):
+    """Custom property ``emissionGI``: "baked" (default) or "none"; None if set to anything else."""
+    v = mat.get("emissionGI")
+    if v is None:
+        return "baked"
+    return v if v in EMISSION_GI else None
+
+
 def describe(mat, report):
     """Return (entry dict without textures resolved, list of (key, TextureRef, channel, tex_node))."""
     name = mat.name
     # Same rule as the glTF exporter: no backface culling = double-sided.
     entry = dict(name=name, surface="opaque", doubleSided=not mat.use_backface_culling)
     maps = []
+    if emission_gi(mat) == "none":
+        entry["emissionGI"] = "none"     # "baked" is the default and is left out
 
     if GENERIC_NAME_RE.match(name) or not re.match(r"^[A-Za-z0-9_\-]+$", name):
         report.warn("W_MAT_NAME", f"Material '{name}': rename it (generic name or '.', spaces) - the name is its identity in Unity")
@@ -255,6 +269,9 @@ def collect_materials(modules, report, include_linked=False):
 def validate_materials(modules, report, include_linked=False):
     for mat in collect_materials(modules, report, include_linked):
         entry, maps = describe(mat, report)
+        if emission_gi(mat) is None:
+            report.warn("W_EMISSION_GI", f"Material '{mat.name}': emissionGI = {mat.get('emissionGI')!r} is not allowed "
+                        f"(use 'baked' or 'none'), using 'baked'")
         for key, ref, channel, node in maps:
             data, src, fname = _texture_source(ref.image)
             if data is None and (src is None or not os.path.isfile(src)):

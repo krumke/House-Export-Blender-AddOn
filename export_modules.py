@@ -1,4 +1,5 @@
-"""Module export: one FBX per module with all LODs and the optional collider.
+"""Module export: one FBX per module with all LODs, the optional collider and one empty
+per light (``<Module>_Light[_<nn>]``); the light parameters go into the manifest (``lights``).
 
 The module origin (collection.instance_offset) is moved to the world origin
 for the export by temporarily shifting the objects' locations. Locations and
@@ -30,7 +31,7 @@ def export_modules(src_scene, modules, out_dir, manifest_path, meta, force, repo
             objs = m.objects
             offset = m.offset.copy()
             saved = [(o, o.location.copy(), o.matrix_world.copy(), o.hide_viewport) for o in objs]
-            linked = []
+            linked, empties, held = [], [], []   # held: (light object, original name)
             try:
                 for o in objs:
                     tmp.collection.objects.link(o)
@@ -39,9 +40,24 @@ def export_modules(src_scene, modules, out_dir, manifest_path, meta, force, repo
                     # matrix_world is set explicitly: the temporary scene's depsgraph does not
                     # write evaluated matrices back to the original objects the exporter reads.
                     o.matrix_world = Matrix.Translation(-offset) @ o.matrix_world
+                # Lights: an empty with the light's name and transform (relative to the module
+                # origin) goes into the FBX, so the axis conversion is the same as for the meshes.
+                # The parameters go into the manifest. The light itself is not exported.
+                lights = [C.light_entry(light) for light in m.lights]
+                light_matrices = {}
+                for light in m.lights:
+                    name = light.name
+                    light_matrices[name] = Matrix.Translation(-offset) @ light.matrix_world
+                    held.append((light, name))
+                    light.name = f"__hp_light_hold_{len(held)}"   # frees the name for the empty
+                    e = bpy.data.objects.new(name, None)
+                    empties.append(e)
+                    e.empty_display_size = 0.1
+                    tmp.collection.objects.link(e)
+                    e.matrix_world = light_matrices[name]
                 depsgraph = bpy.context.evaluated_depsgraph_get()
                 depsgraph.update()
-                digest = hashing.module_hash(objs, depsgraph)
+                digest = hashing.module_hash(objs, depsgraph, lights, light_matrices)
 
                 filename = f"{m.name}.fbx"
                 path = os.path.join(out_dir, filename)
@@ -51,9 +67,9 @@ def export_modules(src_scene, modules, out_dir, manifest_path, meta, force, repo
                     skipped.append(m.name)
                     entries.append(dict(prev, category=m.category, detail=m.detail, behavior=m.behavior))
                     continue
-                fbx_io.export_scene_contents(path, {"MESH"})
+                fbx_io.export_scene_contents(path, {"MESH", "EMPTY"} if empties else {"MESH"})
                 exported.append(m.name)
-                entries.append(dict(
+                entry = dict(
                     name=m.name,
                     file=filename,
                     category=m.category,
@@ -63,8 +79,15 @@ def export_modules(src_scene, modules, out_dir, manifest_path, meta, force, repo
                     hasCollider=m.collider is not None,
                     hash=digest,
                     exported=manifest.now_iso(),
-                ))
+                )
+                if lights:
+                    entry["lights"] = lights
+                entries.append(entry)
             finally:
+                for e in empties:
+                    bpy.data.objects.remove(e, do_unlink=True)
+                for light, name in held:
+                    light.name = name
                 for o in linked:
                     tmp.collection.objects.unlink(o)
                 for o, loc, mw, hide in saved:

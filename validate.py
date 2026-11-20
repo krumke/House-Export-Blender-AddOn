@@ -5,11 +5,12 @@ Every rule has a short code so tests and users can refer to it:
 Errors (export is aborted)
   E_NAME            module name contains characters other than A-Z a-z 0-9 _
   E_NO_LOD0         module has no <Module>_LOD0 mesh
-  E_OBJECT_NAME     object in a module collection does not follow <Module>_LOD<n> / <Module>_COL
-  E_FOREIGN_OBJECT  non-mesh object in a module collection
-  E_UNAPPLIED       rotation/scale of a module mesh is not applied
-  E_NEGATIVE_SCALE  negative scale on a module mesh or on an instance
-  E_PARENT          module mesh is parented
+  E_OBJECT_NAME     object in a module collection does not follow <Module>_LOD<n> / <Module>_COL / <Module>_Light[_<nn>]
+  E_FOREIGN_OBJECT  object in a module collection that is neither a mesh nor a light
+  E_UNAPPLIED       rotation/scale of a module mesh is not applied, or scale of a module light is not 1
+  E_NEGATIVE_SCALE  negative scale on a module mesh/light or on an instance
+  E_PARENT          module mesh or light is parented
+  E_LIGHT_TYPE      light in a module is a Sun (only Point, Spot, Area)
   E_NESTED          module contains collection instances or child collections
   E_UNIQUE_PREFIX   unique module without <House>_ prefix
   E_UNKNOWN_MODULE  instance points to a collection that is neither linked from a kit nor a unique module
@@ -31,6 +32,11 @@ Warnings (export continues)
   W_GROUP_MISSING   layout sub-collection without 'group' property, treated as folder
   W_IGNORED         non-geometry object inside the layout is ignored (except ProbeSeed empties directly in a room)
   W_UNITS           scene unit scale is not 1.0
+  W_LIGHT_EXTERIOR  light in an exterior module (would end up in the campus bake)
+  W_LIGHT_POWER     light power <= 0
+  W_LIGHT_SIZE      area light with size <= 0
+  W_LIGHT_FAR       light more than LIGHT_FAR_DIST outside the module's LOD0 bounds (forgotten offset?)
+  W_LIGHT_RANGE     custom property 'range' is not a number > 0
 """
 
 from dataclasses import dataclass, field
@@ -63,6 +69,9 @@ class LayoutInstance:
 
 
 # --------------------------------------------------------------------------- modules
+LIGHT_FAR_DIST = 2.0     # m outside the LOD0 bounds -> W_LIGHT_FAR
+
+
 def _bounds(obj):
     pts = [Vector(c) + obj.location for c in obj.bound_box]
     return (Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts))),
@@ -84,8 +93,13 @@ def validate_module(m, report, house=None):
         if o.instance_type == "COLLECTION" and o.instance_collection:
             report.error("E_NESTED", f"Module '{n}' contains collection instance '{o.name}'")
             continue
+        if o.type == "LIGHT":
+            if o not in m.lights:
+                report.error("E_OBJECT_NAME", f"Module '{n}': light '{o.name}' must be named '{n}_Light' or '{n}_Light_<nn>'")
+            _check_light(m, o, report)
+            continue
         if o.type != "MESH":
-            report.error("E_FOREIGN_OBJECT", f"Module '{n}': object '{o.name}' is a {o.type}, only meshes are allowed")
+            report.error("E_FOREIGN_OBJECT", f"Module '{n}': object '{o.name}' is a {o.type}, only meshes and lights are allowed")
             continue
         if o not in known:
             report.error("E_OBJECT_NAME", f"Module '{n}': object '{o.name}' must be named '{n}_LOD<n>' or '{n}_COL'")
@@ -124,6 +138,42 @@ def validate_module(m, report, house=None):
         report.warn("W_BEHAVIOR", f"Module '{n}': unknown behavior '{raw}' (allowed: {sorted(C.BEHAVIORS)}), module stays static")
     if m.behavior == "door" and m.collider is None:
         report.warn("W_DOOR_NO_COL", f"Door module '{n}' has no '{n}_COL'; Unity adds a box collider from LOD0")
+
+    if m.lights and m.category == "exterior":
+        report.warn("W_LIGHT_EXTERIOR", f"Module '{n}' is an exterior module with {len(m.lights)} light(s); "
+                    "they would end up in the campus bake (use an interior lamp module)")
+
+
+def _check_light(m, o, report):
+    """Light objects in a module: type, transform and parameters."""
+    n = m.name
+    light = o.data
+    if light.type not in C.LIGHT_TYPES:
+        report.error("E_LIGHT_TYPE", f"Module '{n}': light '{o.name}' is a {light.type} light; only Point, Spot and Area are allowed")
+    if o.parent is not None:
+        report.error("E_PARENT", f"Module '{n}': light '{o.name}' is parented to '{o.parent.name}'")
+    # Rotation is the light's direction and stays; scale must be 1 (it scales an area light's surface).
+    sc = o.matrix_basis.to_scale()
+    if o.matrix_basis.determinant() < 0 or any(s < 0 for s in o.scale):
+        report.error("E_NEGATIVE_SCALE", f"Module '{n}': light '{o.name}' has negative scale")
+    elif any(abs(s - 1.0) > 1e-4 for s in sc):
+        report.error("E_UNAPPLIED", f"Module '{n}': light '{o.name}' has scale {tuple(round(s, 4) for s in sc)}; "
+                     "set it to 1 and use the light's size/radius instead")
+    if light.energy * 2.0 ** getattr(light, "exposure", 0.0) <= 0:
+        report.warn("W_LIGHT_POWER", f"Module '{n}': light '{o.name}' has power {light.energy} W")
+    if light.type == "AREA":
+        sizes = [light.size] + ([light.size_y] if light.shape in {"RECTANGLE", "ELLIPSE"} else [])
+        if any(s <= 0 for s in sizes):
+            report.warn("W_LIGHT_SIZE", f"Module '{n}': area light '{o.name}' has size {sizes}")
+    if "range" in o and C.light_range(o) is None:
+        report.warn("W_LIGHT_RANGE", f"Module '{n}': light '{o.name}' has 'range' = {o['range']!r}; expected a number > 0 (m), using Unity's default")
+    if 0 in m.lods:
+        mn, mx = _bounds(m.lods[0])
+        p = o.matrix_world.translation
+        d = Vector((max(mn.x - p.x, 0, p.x - mx.x), max(mn.y - p.y, 0, p.y - mx.y), max(mn.z - p.z, 0, p.z - mx.z))).length
+        if d > LIGHT_FAR_DIST:
+            report.warn("W_LIGHT_FAR", f"Module '{n}': light '{o.name}' is {d:.2f} m outside the LOD0 bounds "
+                        "(placed in house coordinates instead of next to the lamp?)")
 
 
 # --------------------------------------------------------------------------- kit
@@ -293,6 +343,9 @@ def _check_objects(coll, node, forbidden_where, uniques, report, seen_objs, ctx=
                 node.seeds.append(o)
             elif o.type in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES", "POINTCLOUD", "VOLUME", "GPENCIL", "GREASEPENCIL"}:
                 report.error("E_LOOSE_OBJECT", f"'{o.name}' in '{coll.name}' is geometry, not a collection instance of a module")
+            elif o.type == "LIGHT":
+                report.warn("W_IGNORED", f"Light '{o.name}' in '{coll.name}' is ignored by the layout export; "
+                            "lights belong in a lamp module (<Module>_Light)")
             else:
                 report.warn("W_IGNORED", f"'{o.name}' ({o.type}) in '{coll.name}' is ignored by the layout export")
             continue

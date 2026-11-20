@@ -28,10 +28,18 @@ Blender add-on (Blender 4.2+, tested with 5.1.2) that exports modular houses for
 <Module>                  collection, instance_offset = module origin
  ├─ <Module>_LOD0         mesh, required
  ├─ <Module>_LOD1 … _LOD7 optional, may be hidden (hide_viewport / hide_render); exported anyway
- └─ <Module>_COL          optional collider mesh
+ ├─ <Module>_COL          optional collider mesh
+ └─ <Module>_Light[_<nn>] optional lights (Point, Spot, Area), e.g. for lamp modules
 ```
 
 - Mesh objects: rotation and scale applied, no parent, no negative scale.
+- Lights: no parent, scale 1 (it would scale an area light's surface; use the light's size instead),
+  rotation is kept (it is the light's direction). Only in interior modules: lights in exterior
+  modules would end up in the campus bake (`W_LIGHT_EXTERIOR`). Optional object property `range`
+  (m) sets the Unity light range, otherwise Unity's default is used.
+- Lights are **not** exported as FBX lights (Unity's FBX light import is unreliable). Each light becomes
+  an **empty** with the same name and transform (relative to the module origin, same axis conversion as
+  the meshes) in the module FBX, and its parameters go into the module manifest (`lights[]`, see below).
 - Any number of LODs is exported, but keep the indices consecutive (`W_LOD_GAP`) and stay within
   LOD0–LOD7, the maximum of a Unity LODGroup (`W_LOD_COUNT`).
 - Modifiers stay live in the file and are applied **during export** only.
@@ -150,6 +158,7 @@ node in front of the textures becomes `tiling` / `offset`. An **unconnected** im
 | `alpha`, `alphaMap`, `alphaCutoff` | Alpha |
 | `doubleSided` | *Material → Settings → Backface Culling* off = double-sided, on = single-sided (same as glTF) |
 | `tiling`, `offset` | Mapping node (scale, location) |
+| `emissionGI` | material custom property `emissionGI`: `"baked"` (default, field left out) or `"none"`; other values warn (`W_EMISSION_GI`) |
 
 Texture entries: `file` (relative to `MaterialSource/`), `hash`, `colorSpace` (`sRGB` for base color / emission,
 otherwise `Linear`), optional `channel`, `convention`.
@@ -207,11 +216,12 @@ Errors abort the export, warnings do not.
 |---|---|
 | E_NAME | invalid characters in a module name |
 | E_NO_LOD0 | module without `<Module>_LOD0` |
-| E_OBJECT_NAME | object in a module not named `<Module>_LOD<n>` / `<Module>_COL` |
-| E_FOREIGN_OBJECT | non-mesh object in a module |
-| E_UNAPPLIED | rotation/scale of a module mesh not applied |
-| E_NEGATIVE_SCALE | negative scale on a module mesh or an instance |
-| E_PARENT | module mesh is parented |
+| E_OBJECT_NAME | object in a module not named `<Module>_LOD<n>` / `<Module>_COL` / `<Module>_Light[_<nn>]` |
+| E_FOREIGN_OBJECT | object in a module that is neither a mesh nor a light |
+| E_UNAPPLIED | rotation/scale of a module mesh not applied, or scale of a module light ≠ 1 |
+| E_NEGATIVE_SCALE | negative scale on a module mesh/light or an instance |
+| E_PARENT | module mesh or light is parented |
+| E_LIGHT_TYPE | Sun light in a module (only Point, Spot, Area) |
 | E_NESTED | collection instance or child collection inside a module |
 | E_UNIQUE_PREFIX | unique module without `<House>_` prefix |
 | E_UNKNOWN_MODULE | instance of a collection that is neither linked from a kit nor unique |
@@ -233,8 +243,14 @@ Errors abort the export, warnings do not.
 | W_DOOR_NO_COL | door module without `<Module>_COL` (Unity adds a box collider from LOD0) |
 | W_APPENDED | local copy of a kit-looking module (append instead of link) |
 | W_GROUP_MISSING | layout sub-collection without `group`, treated as folder |
-| W_IGNORED | light/camera/empty in the layout, ignored (except `ProbeSeed*` empties directly in a room) |
+| W_IGNORED | light/camera/empty in the layout, ignored (except `ProbeSeed*` empties directly in a room); lights belong in a lamp module |
 | W_UNITS | scene unit scale ≠ 1.0 |
+| W_LIGHT_EXTERIOR | light in an exterior module (would end up in the campus bake) |
+| W_LIGHT_POWER | light power ≤ 0 |
+| W_LIGHT_SIZE | area light with `size` / `size_y` ≤ 0 |
+| W_LIGHT_FAR | light more than 2 m outside the module's LOD0 bounds (forgotten offset?) |
+| W_LIGHT_RANGE | custom property `range` present but not a number > 0 |
+| W_EMISSION_GI | material property `emissionGI` is neither `baked` nor `none` |
 | W_NAME | layout node exported under another name because the name is taken by linked data |
 | W_HM_EXTERIOR | house model: exterior instances outside an `Exterior_<Storey>` collection are left out |
 | W_HM_FLOOR | house model: storey without instances, `floorY` = 0 |
@@ -263,6 +279,26 @@ Errors abort the export, warnings do not.
   header has `source: "unique"` and `house`).
 - **Layout manifest** additionally contains `coordinateSpace: "world"`, `instanceCount`,
   `modules[]` (`name`, `source` = `kit`/`unique`, `count`) and `rooms[]` (`name`, `storey`, `room_*`).
+- **Module lights**: a module manifest entry may have `lights[]` (left out when the module has none;
+  `MANIFEST_VERSION` stays 1, older Unity versions ignore it). Each entry belongs to the empty of the same
+  name in the module FBX. No null values (JsonUtility): "not set" is 0 or `""`.
+
+  | Field | Source in Blender |
+  |---|---|
+  | `name` | light object name `<Module>_Light[_<nn>]` |
+  | `type` | `point` / `spot` / `area` |
+  | `color` | light color, linear RGB |
+  | `power` | Power in W (× 2^Exposure) |
+  | `shape` | area: `square` / `rectangle` / `disk` / `ellipse`, else `""` |
+  | `size` | area: `[size, size_y]` (`[size, size]` for square/disk) along the light's local X/Y, else `[0, 0]` |
+  | `radius` | point/spot: Radius (`shadow_soft_size`), else 0 |
+  | `spotAngle` | spot: full cone angle in degrees, else 0 |
+  | `spotBlend` | spot: blend 0..1, else 0 |
+  | `range` | object property `range` in m, 0 = Unity default |
+
+  Blender lights shine along their local −Z, Unity lights along local +Z: the builder needs a fixed
+  correction rotation on the light component (check once with a spot pointing down). Light changes
+  (parameters or transform) change the module hash; modules without lights keep their old hash.
 - **Units**: FBX files declare `UnitScaleFactor = 100` (cm units) with values in metres
   (`FBX_SCALE_ALL`); Unity with *Convert Units* on gives scale 1.
 - **Axes**: both module and layout FBX are written in Y-up / -Z forward space. Modules use
@@ -278,7 +314,7 @@ Errors abort the export, warnings do not.
 blender -b --factory-startup --python tests/run_tests.py -- <empty output folder>
 ```
 
-131 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
+174 checks: asymmetric module with 0°/90°/3-axis rotations, scale, nested folders and rooms matches
 exactly in FBX space; shifted `instance_offset`; hidden LODs and modifiers; manifests; second export
 writes nothing; only changed modules are re-exported; force export; removed modules; the .blend file
 is unchanged after export; kit export, mode detection and linked kit modules; every validation rule
@@ -288,7 +324,9 @@ re-export, change detection, every material warning); linked library materials (
 exports skip them); house model (room fields, ids, storey order and `floorY`, polygons, seeds, storey USDZ in the
 shared frame with the coarsest LOD, instancing, Props left out, normal map encoding, props models per room
 (frame, LOD, stale files, switched off), Storey / Props LOD settings, ARKit compliance
-(`UsdUtils.ComplianceChecker`), duplicate ids abort).
+(`UsdUtils.ComplianceChecker`), duplicate ids abort); module lights (manifest `lights[]`, one empty per light at
+the right position/rotation in FBX space, no temporary objects left, hash unchanged for modules without lights,
+power/position changes re-export, every light validation rule); `emissionGI`.
 
 ## Building the ZIP
 

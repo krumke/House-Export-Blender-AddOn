@@ -2,7 +2,8 @@
 
 The hash covers, for every LOD and the collider (in name order): object name,
 evaluated vertex positions in module space, corner normals, all UV layers,
-face topology and the material slot names per face. Modifiers are evaluated
+face topology and the material slot names per face; plus, only if the module has
+lights, every light's manifest fields and transform. Modifiers are evaluated
 (same result as the FBX export with use_mesh_modifiers=True). Values are
 rounded so that float noise does not change the hash.
 """
@@ -14,8 +15,31 @@ def _fmt(values, digits):
     return ",".join(f"{(round(v, digits) + 0.0):.{digits}f}" for v in values)
 
 
-def module_hash(objects, depsgraph):
-    """``objects`` must already be placed so that ``obj.location`` is relative to the module origin."""
+def lights_hash_part(lights, matrices):
+    """Bytes for the module lights: name, every manifest field and the matrix relative to the
+    module origin (``matrices``: name -> Matrix), sorted by name, rounded."""
+    out = []
+    for e in sorted(lights, key=lambda e: e["name"]):
+        fields = []
+        for k in sorted(e):
+            v = e[k]
+            if isinstance(v, (list, tuple)):
+                fields.append(f"{k}=" + _fmt(v, 5))
+            elif isinstance(v, float):
+                fields.append(f"{k}=" + _fmt([v], 5))
+            else:
+                fields.append(f"{k}={v}")
+        mat = matrices[e["name"]]
+        fields.append("M=" + _fmt([v for row in mat for v in row], 5))
+        out.append("|".join(fields))
+    return b"LIGHTS" + "\n".join(out).encode()
+
+
+def module_hash(objects, depsgraph, lights=(), light_matrices=None):
+    """``objects`` must already be placed so that ``obj.location`` is relative to the module origin.
+
+    ``lights`` are manifest entries (common.light_entry); they are only hashed when there are
+    any, so modules without lights keep the hash they had before lights were supported."""
     h = hashlib.sha1()
     for obj in sorted(objects, key=lambda o: o.name):
         ev = obj.evaluated_get(depsgraph)
@@ -56,4 +80,6 @@ def module_hash(objects, depsgraph):
             h.update(b"M" + "|".join(face_mats).encode())
         finally:
             ev.to_mesh_clear()
+    if lights:
+        h.update(lights_hash_part(lights, light_matrices or {}))
     return h.hexdigest()

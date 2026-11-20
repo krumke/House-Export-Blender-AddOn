@@ -116,6 +116,7 @@ class HOUSEPIPE_OT_validate(bpy.types.Operator):
     def execute(self, context):
         mode, house, report, modules, layout = run_validation(context)
         extra = [f"INFO    Mode {mode}" + (f", house '{house}'" if house else "") + f", {len(modules)} module(s)"]
+        extra += [f"INFO    Module '{m.name}': {len(m.lights)} light(s)" for m in modules if m.lights]
         return _finish(self, "Validate", report, extra)
 
 

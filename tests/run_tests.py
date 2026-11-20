@@ -569,7 +569,10 @@ def test_house_model():
 
     def mesh_points(path):
         st = Usd.Stage.Open(path)
-        st.Reload()   # the layer registry still holds the files opened above
+        # the layer registry still holds the files opened above; force, because a plain Reload()
+        # skips files whose timestamp looks unchanged (rewritten within the same second)
+        for layer in st.GetUsedLayers():
+            layer.Reload(force=True)
         return {len(UsdGeom.Mesh(p).GetPointsAttr().Get()) for p in st.Traverse(Usd.TraverseInstanceProxies()) if p.IsA(UsdGeom.Mesh)}
 
     s.model_storey_lod = "1"
@@ -919,13 +922,188 @@ def test_materials():
         check(f"material warning {code}", code in codes, str([l for l in report.lines() if "MAT" in l][:4]))
 
 
+def add_light(coll, name, kind, loc, rot=(0, 0, 0)):
+    light = bpy.data.lights.new(name, kind)
+    o = bpy.data.objects.new(name, light)
+    o.location = loc
+    o.rotation_euler = [radians(a) for a in rot]
+    coll.objects.link(o)
+    return o
+
+
+# Hashes of the TD test house's modules (no lights) written by 2.0.0-alpha before lights were supported.
+PRE_LIGHT_HASHES = {"TD_Arrow": "02abf224315b8261f099177271b4c2c1f089e974",
+                    "TD_InnerWall": "afe4f23c38043da5c0229fb58c30e97a648cd08e",
+                    "TD_Shelf": "cb621b39f9ab20730c1d2145d7bf43763923a1a5"}
+
+
+def test_lights():
+    """Lamp module with an area and a spot light: empties in the FBX, parameters in the manifest."""
+    # modules without lights keep their hash (no mass re-export after the update)
+    build_house("TD")
+    s = bpy.context.scene.house_pipeline
+    s.export_root_override = os.path.join(OUT, "_hash_regression")
+    bpy.ops.house_pipeline.export_house()
+    man = hp.manifest.read_json(os.path.join(s.export_root_override, "Houses", "TD", "Unique", "TD_Unique_Manifest.json"))
+    got = {e["name"]: e["hash"] for e in man["modules"]}
+    check("modules without lights keep their pre-light hash", got == PRE_LIGHT_HASHES, str(got))
+    check("manifest entry without lights has no 'lights' field", not any("lights" in e for e in man["modules"]))
+
+    h = build_house("TX")
+    s = bpy.context.scene.house_pipeline
+    lamp =make_module("TX_Lamp", h["mods"], offset=(30, 5, 2), lods=(0,), category="interior", detail="small")
+    off = Vector((30, 5, 2))
+    area = add_light(lamp, "TX_Lamp_Light_01", "AREA", off + Vector((1.0, 1.5, 0.5)), (0, 0, 90))
+    area.data.shape = "RECTANGLE"
+    area.data.size, area.data.size_y = 1.2, 0.3
+    area.data.energy = 40.0
+    area.data.color = (1.0, 0.92, 0.82)
+    spot = add_light(lamp, "TX_Lamp_Light_02", "SPOT", off + Vector((0.5, 2.0, 0.4)), (30, 0, 45))
+    spot.data.energy = 100.0
+    spot.data.spot_size = radians(60)
+    spot.data.spot_blend = 0.25
+    spot.data.shadow_soft_size = 0.05
+    spot["range"] = 8.0
+    instance(lamp, h["p1"], "Lamp_1", (1, 1, 2.5))
+    bpy.context.view_layer.update()
+    mws = {o.name: o.matrix_world.copy() for o in (area, spot)}
+
+    report, mods, _ = validate.validate_house(bpy.context.scene, "TX")
+    check("lamp module with area + spot light validates cleanly", report.ok and not report.warnings, str(report.lines()[:5]))
+    lm = next((m for m in mods if m.name == "TX_Lamp"), None)
+    check("lights gathered, sorted, not part of objects", lm is not None and [o.name for o in lm.lights] == [area.name, spot.name]
+          and not any(o.type == "LIGHT" for o in lm.objects))
+
+    s.export_root_override = OUT
+    before = snapshot()
+    r = bpy.ops.house_pipeline.export_house()
+    lines = hp.operators.LAST_RESULT["lines"]
+    check("lamp export finishes", r == {"FINISHED"}, str(lines[:5]))
+    s.export_root_override = ""
+    after = snapshot()
+    s.export_root_override = OUT
+    diff = [k for k in set(before) | set(after) if before.get(k) != after.get(k)]
+    check("no temporary empties left, lights keep their names", not diff and not any(o.name.startswith("__hp") for o in bpy.data.objects),
+          str(diff[:5]))
+
+    uni_dir = os.path.join(OUT, "Houses", "TX", "Unique")
+    man = hp.manifest.read_json(os.path.join(uni_dir, "TX_Unique_Manifest.json"))
+    e = {m["name"]: m for m in man["modules"]}
+    ls = {l["name"]: l for l in e["TX_Lamp"].get("lights", [])}
+    want_area = dict(name="TX_Lamp_Light_01", type="area", color=[1.0, 0.92, 0.82], power=40.0, shape="rectangle",
+                     size=[1.2, 0.3], radius=0.0, spotAngle=0.0, spotBlend=0.0, range=0.0)
+    want_spot = dict(name="TX_Lamp_Light_02", type="spot", color=[1.0, 1.0, 1.0], power=100.0, shape="",
+                     size=[0.0, 0.0], radius=0.05, spotAngle=60.0, spotBlend=0.25, range=8.0)
+    check("manifest: area light entry", ls.get("TX_Lamp_Light_01") == want_area, str(ls.get("TX_Lamp_Light_01")))
+    check("manifest: spot light entry", ls.get("TX_Lamp_Light_02") == want_spot, str(ls.get("TX_Lamp_Light_02")))
+    check("manifest: no null values in light entries", all(v is not None for l in ls.values() for v in l.values()))
+    check("other modules have no 'lights' field", not any("lights" in m for n, m in e.items() if n != "TX_Lamp"))
+
+    _, models, geoms = fbx_reader.model_data(os.path.join(uni_dir, "TX_Lamp.fbx"))
+    by_name = {m["name"]: m for m in models.values()}
+    empties = sorted(m["name"] for m in models.values() if m["geom"] is None)
+    check("lamp FBX contains LOD0 and one empty per light", empties == ["TX_Lamp_Light_01", "TX_Lamp_Light_02"]
+          and "TX_Lamp_LOD0" in by_name, str(sorted(by_name)))
+    G = fbx_io.axis_matrix()
+    dev = 0.0
+    for n, mw in mws.items():
+        want = G @ Matrix.Translation(-off) @ mw @ G.inverted()
+        dev = max(dev, max(abs(a - b) for ra, rb in zip(want, by_name[n]["world"]) for a, b in zip(ra, rb)))
+    check("light empties at their position/rotation relative to the module origin (FBX space)", dev < 1e-4, f"max deviation {dev:.2e}")
+    l0 = by_name["TX_Lamp_LOD0"]
+    src = lamp.objects["TX_Lamp_LOD0"]
+    d = max(((l0["world"] @ v) - G @ (sv.co + src.location - off)).length for v, sv in zip(geoms[l0["geom"]], src.data.vertices))
+    check("lamp mesh unchanged next to the empties", d < 1e-5, f"{d:.2e}")
+    _, amodels, _ = fbx_reader.model_data(os.path.join(uni_dir, "TX_Arrow.fbx"))
+    check("module without lights: FBX has no empties", all(m["geom"] is not None for m in amodels.values()))
+
+    # hash covers the lights
+    mtimes = {f: os.path.getmtime(os.path.join(uni_dir, f)) for f in os.listdir(uni_dir) if f.endswith(".fbx")}
+    bpy.ops.house_pipeline.export_house()
+    check("second export skips the unchanged lamp", all(os.path.getmtime(os.path.join(uni_dir, f)) == t for f, t in mtimes.items()))
+    h0 = e["TX_Lamp"]["hash"]
+    spot.data.energy = 120.0
+    bpy.ops.house_pipeline.export_house()
+    man = hp.manifest.read_json(os.path.join(uni_dir, "TX_Unique_Manifest.json"))
+    e2 = {m["name"]: m for m in man["modules"]}
+    changed = [f for f, t in mtimes.items() if os.path.getmtime(os.path.join(uni_dir, f)) != t]
+    check("power change changes the hash and re-exports only the lamp", e2["TX_Lamp"]["hash"] != h0 and changed == ["TX_Lamp.fbx"]
+          and {l["name"]: l for l in e2["TX_Lamp"]["lights"]}["TX_Lamp_Light_02"]["power"] == 120.0, str(changed))
+    h1 = e2["TX_Lamp"]["hash"]
+    area.location.x += 0.1
+    bpy.ops.house_pipeline.export_house()
+    man = hp.manifest.read_json(os.path.join(uni_dir, "TX_Unique_Manifest.json"))
+    check("moving a light changes the hash", {m["name"]: m for m in man["modules"]}["TX_Lamp"]["hash"] != h1)
+    s.export_root_override = ""
+
+    # validation of lights
+    def lamp_light(h, name, kind="POINT", loc=(0.5, 0.5, 0.3), module="shelf"):
+        c = h[module]
+        return add_light(c, name, kind, c.instance_offset + Vector(loc))
+    expect("E_LIGHT_TYPE", lambda h: lamp_light(h, "TH_Shelf_Light", "SUN"))
+    expect("E_OBJECT_NAME", lambda h: lamp_light(h, "TH_Shelf_Lamp"))
+    expect("E_OBJECT_NAME", lambda h: lamp_light(h, "TH_Arrow_Light_01"))   # light of another module
+    expect("E_PARENT", lambda h: setattr(lamp_light(h, "TH_Shelf_Light"), "parent", h["shelf"].objects["TH_Shelf_LOD0"]))
+    expect("E_UNAPPLIED", lambda h: setattr(lamp_light(h, "TH_Shelf_Light", "AREA"), "scale", (2, 1, 1)))
+    expect("E_NEGATIVE_SCALE", lambda h: setattr(lamp_light(h, "TH_Shelf_Light"), "scale", (-1, 1, 1)))
+    expect("W_LIGHT_EXTERIOR", lambda h: lamp_light(h, "TH_Arrow_Light", module="arrow"), warning=True)
+    expect("W_LIGHT_FAR", lambda h: lamp_light(h, "TH_Shelf_Light", loc=(12, 0, 0)), warning=True)
+    expect("W_LIGHT_POWER", lambda h: setattr(lamp_light(h, "TH_Shelf_Light").data, "energy", 0.0), warning=True)
+    expect("W_LIGHT_SIZE", lambda h: setattr(lamp_light(h, "TH_Shelf_Light", "AREA").data, "size", 0.0), warning=True)
+    expect("W_LIGHT_RANGE", lambda h: lamp_light(h, "TH_Shelf_Light").__setitem__("range", "far"), warning=True)
+    expect("W_LIGHT_RANGE", lambda h: lamp_light(h, "TH_Shelf_Light").__setitem__("range", -1.0), warning=True)
+
+    def rotated_ok(h):
+        lamp_light(h, "TH_Shelf_Light", "SPOT").rotation_euler = (radians(40), 0, radians(10))
+    build_house("TH")
+    rotated_ok({"shelf": bpy.data.collections["TH_Shelf"]})
+    report, _, _ = validate.validate_house(bpy.context.scene, "TH")
+    check("rotated light in an interior module is fine", report.ok and not report.warnings, str(report.lines()[:3]))
+
+    build_house("TH")
+    bpy.data.collections["Exterior"].objects.link(bpy.data.objects.new("Lamp", bpy.data.lights.new("Lamp", "POINT")))
+    report, _, _ = validate.validate_house(bpy.context.scene, "TH")
+    check("light in the layout: W_IGNORED with lamp module hint",
+          any(c == "W_IGNORED" and "lamp module" in m for c, m in report.warnings), str(report.lines()[:3]))
+
+
+def test_emission_gi():
+    import json
+    h = build_house("TG")
+    lod0 = h["arrow"].objects["TG_Arrow_LOD0"]
+    m_none, m_default, m_bad = (bpy.data.materials.new(n) for n in ("TG_Glow", "TG_Plain", "TG_Bad"))
+    m_none["emissionGI"] = "none"
+    m_bad["emissionGI"] = "realtime"
+    for m in (m_none, m_default, m_bad):
+        lod0.data.materials.append(m)
+    report = hp.common.Report()
+    hp.export_materials.validate_materials(validate.validate_house(bpy.context.scene, "TG")[1], report)
+    check("invalid emissionGI warns W_EMISSION_GI", any(c == "W_EMISSION_GI" and "TG_Bad" in m for c, m in report.warnings), str(report.lines()[:3]))
+    check("valid emissionGI does not warn", not any(c == "W_EMISSION_GI" and "TG_Bad" not in m for c, m in report.warnings))
+    s = bpy.context.scene.house_pipeline
+    s.export_root_override = OUT
+    bpy.ops.house_pipeline.export_house()
+    man_path = os.path.join(OUT, "MaterialSource", "Material_Manifest.json")
+    e = {m["name"]: m for m in json.load(open(man_path))["materials"]}
+    check("emissionGI 'none' in the manifest, default/invalid left out",
+          e["TG_Glow"].get("emissionGI") == "none" and "emissionGI" not in e["TG_Plain"] and "emissionGI" not in e["TG_Bad"],
+          str({n: e[n].get("emissionGI") for n in ("TG_Glow", "TG_Plain", "TG_Bad")}))
+    h0 = e["TG_Plain"]["hash"]
+    m_default["emissionGI"] = "none"
+    bpy.ops.house_pipeline.export_house()
+    e = {m["name"]: m for m in json.load(open(man_path))["materials"]}
+    check("changing emissionGI changes the material hash", e["TG_Plain"]["hash"] != h0 and e["TG_Plain"].get("emissionGI") == "none")
+    s.export_root_override = ""
+
+
 def main():
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)
     os.makedirs(OUT)
     hp.register()
     try:
-        for t in (test_house_export, test_door_export, test_room_split, test_house_model, test_validation, test_materials):
+        for t in (test_house_export, test_door_export, test_room_split, test_house_model, test_validation, test_materials,
+                  test_lights, test_emission_gi):
             try:
                 t()
             except Exception:

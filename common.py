@@ -11,6 +11,7 @@ project decisions made for HoF:
 
 import re
 from dataclasses import dataclass, field
+from math import degrees
 
 import bpy
 from mathutils import Matrix
@@ -19,6 +20,8 @@ MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 LOD_RE = re.compile(r"^(?P<module>.+)_LOD(?P<idx>\d+)$")
 ROOM_RE = re.compile(r"^Room_(?P<storey>[A-Za-z0-9]+)_(?P<name>[A-Za-z0-9_]+)$")
 COL_SUFFIX = "_COL"
+LIGHT_RE = re.compile(r"^(?P<module>.+)_Light(_(?P<idx>\d+))?$")
+LIGHT_TYPES = {"POINT", "SPOT", "AREA"}   # SUN is not allowed in modules
 SEED_PREFIX = "ProbeSeed"
 ROOM_PROP_PREFIX = "room_"
 MAX_LODS = 8                     # Unity LODGroup supports LOD0..LOD7
@@ -87,6 +90,9 @@ class ModuleInfo:
     behavior: str = ""               # "" (static) or one of BEHAVIORS
     lods: dict = field(default_factory=dict)   # idx -> object
     collider: object = None
+    # LIGHT objects <Module>_Light / <Module>_Light_<nn>, sorted by name. Not part of ``objects``:
+    # they are exported as empties (FBX) plus manifest entries, see export_modules.py.
+    lights: list = field(default_factory=list)
 
     @property
     def offset(self):
@@ -103,6 +109,53 @@ class ModuleInfo:
 # --------------------------------------------------------------------------- helpers
 def strip_dup_suffix(name):
     return re.sub(r"\.\d{3,}$", "", name)
+
+
+def is_module_light_name(name, module):
+    """``<module>_Light`` or ``<module>_Light_<nn>``."""
+    lm = LIGHT_RE.match(name)
+    return lm is not None and lm.group("module") == module
+
+
+def _r(v, d=5):
+    return round(float(v), d) + 0.0
+
+
+def light_range(obj):
+    """Custom property ``range`` in m if it is a positive number, else None (unset or invalid)."""
+    v = obj.get("range")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+        return float(v)
+    return None
+
+
+def light_entry(obj):
+    """Manifest entry of a module light (``obj.data`` is a bpy Light). No null values: Unity
+    reads the manifest with JsonUtility, so "not set" is 0 / ""."""
+    light = obj.data
+    t = light.type
+    power = light.energy * 2.0 ** getattr(light, "exposure", 0.0)
+    shape, size, radius, spot_angle, spot_blend = "", [0.0, 0.0], 0.0, 0.0, 0.0
+    if t == "AREA":
+        shape = light.shape.lower()
+        size = [_r(light.size), _r(light.size_y if light.shape in {"RECTANGLE", "ELLIPSE"} else light.size)]
+    elif t in {"POINT", "SPOT"}:
+        radius = _r(light.shadow_soft_size)
+        if t == "SPOT":
+            spot_angle = _r(degrees(light.spot_size))
+            spot_blend = _r(light.spot_blend)
+    return dict(
+        name=obj.name,
+        type=t.lower(),
+        color=[_r(c) for c in light.color],
+        power=_r(power),
+        shape=shape,
+        size=size,
+        radius=radius,
+        spotAngle=spot_angle,
+        spotBlend=spot_blend,
+        range=_r(light_range(obj) or 0.0),
+    )
 
 
 def is_identity_3x3(m, tol=TOL):
@@ -184,6 +237,9 @@ def gather_module(coll, source, category=None, report=None):
             m.lods[int(lm.group("idx"))] = o
         elif o.name == coll.name + COL_SUFFIX and o.type == "MESH":
             m.collider = o
+        elif o.type == "LIGHT" and is_module_light_name(o.name, coll.name):
+            m.lights.append(o)
+    m.lights.sort(key=lambda o: o.name)
     m._category_explicit = cat is not None
     m._detail_explicit = det in DETAILS
     m._behavior_raw = beh
